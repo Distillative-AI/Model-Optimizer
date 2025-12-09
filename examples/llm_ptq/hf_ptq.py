@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import argparse
-import gc
 import random
 import time
 import warnings
@@ -511,25 +510,24 @@ def main(args):
                 "input_features" if model_type == "whisper" else "input_ids"
             ][0:1]
 
-            try:
-                # Generate preview before quantization
-                if is_nemotron_vl_model and tokenizer is not None:
-                    generated_ids_before_ptq = run_nemotron_vl_preview(
-                        full_model,
-                        tokenizer,
-                        input_ids,
-                        args.pyt_ckpt_path,
-                        "before quantization",
-                        allow_fallback=True,
-                    )
-                else:
-                    # Standard generation for non-Nemotron VL models
-                    generated_ids_before_ptq = full_model.generate(input_ids, max_new_tokens=100)
-            except torch.OutOfMemoryError:
-                print("Out of memory. Skipping preview generation.")
+            # Generate preview before quantization
+            if model_type == "deepseek":
+                print(
+                    "Deepseek model may hit OOM during preview generation. Skipping preview generation."
+                )
                 generated_ids_before_ptq = None
-                gc.collect()
-                torch.cuda.empty_cache()
+            elif is_nemotron_vl_model and tokenizer is not None:
+                generated_ids_before_ptq = run_nemotron_vl_preview(
+                    full_model,
+                    tokenizer,
+                    input_ids,
+                    args.pyt_ckpt_path,
+                    "before quantization",
+                    allow_fallback=True,
+                )
+            else:
+                # Standard generation for non-Nemotron VL models
+                generated_ids_before_ptq = full_model.generate(input_ids, max_new_tokens=100)
 
             if model_type == "gptoss" and args.qformat == "nvfp4_mlp_only":
                 print("Applying nvfp4 quantization (MoE only) for gpt-oss")
