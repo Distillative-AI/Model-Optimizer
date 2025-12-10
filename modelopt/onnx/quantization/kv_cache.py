@@ -242,7 +242,7 @@ def save_kv_cache_calib_data(
 
     kv_tensor_data = []
 
-    enable_auto_regressive = True
+    enable_auto_regressive = kwargs.get("enable_auto_regressive", False)
     if enable_auto_regressive:
         for i in tqdm(range(len(inputs)), desc="Caching kv cache key values..."):
             inp_d = inputs[i]
