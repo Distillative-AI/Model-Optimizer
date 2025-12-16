@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import argparse
+import os
 import random
 import time
 import warnings
@@ -390,7 +391,7 @@ def load_model(args: argparse.Namespace):
         calibration_only = True
 
     model_type = get_model_type(full_model)
-    if model_type == "qwen3omni":
+    if model_type == "qwen3omni" and os.environ.get("DISABLE_TALKER", "0") == "1":
         full_model.disable_talker()
 
     device = full_model.device
@@ -711,9 +712,9 @@ def pre_quantize(
     """
     # Only run single sample for preview
     calib_batch = next(iter(calib_dataloader))
-    preview_input_ids = calib_batch[
-        "input_features" if model_type == "whisper" else "input_ids"
-    ][0:1]
+    preview_input_ids = calib_batch["input_features" if model_type == "whisper" else "input_ids"][
+        0:1
+    ]
 
     # Generate preview before quantization
     if model_type == "deepseek":
