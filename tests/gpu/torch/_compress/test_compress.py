@@ -23,9 +23,7 @@ from gpu.torch._compress.compress_test_utils import setup_test_model_and_data
 
 import modelopt.torch.utils.distributed as dist
 from modelopt.torch._compress import compress
-from modelopt.torch._compress.decilm.converters.convert_llama3_to_decilm import (
-    convert_llama3_to_decilm,
-)
+from modelopt.torch._compress.anymodel import convert_model
 
 # The e2e test to compress a model based on Local Neural Architecture Search (Mixed Integer Programing NAS search)
 # using a one-click command.
@@ -50,11 +48,12 @@ def _test_compress_multiprocess_job(project_root_path: Path, tmp_path: Path, ran
     hydra_config_dir = project_root_path / "tests/gpu/torch/_compress/resources/configs"
     hydra_config_name = "Llama-3_1-8B-ffn-pruning"
 
-    # Convert the Llama model to DeciLM model.
+    # Convert the Llama model using AnyModel converter.
     if rank == 0:
-        convert_llama3_to_decilm(
-            input_dir=llama_checkpoint_path,
-            output_dir=puzzle_dir / "ckpts/teacher",
+        convert_model(
+            input_dir=str(llama_checkpoint_path),
+            output_dir=str(puzzle_dir / "ckpts/teacher"),
+            converter="llama",
         )
     dist.barrier()
 
