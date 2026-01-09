@@ -77,6 +77,23 @@ from .quant_utils import (
 __all__ = ["export_hf_checkpoint"]
 
 
+def _is_diffusers_model(model: nn.Module) -> bool:
+    """Detect if model is from diffusers library.
+
+    Args:
+        model: The model to check.
+
+    Returns:
+        True if the model is a diffusers DiffusionPipeline or ModelMixin, False otherwise.
+    """
+    try:
+        from diffusers import DiffusionPipeline, ModelMixin
+
+        return isinstance(model, (DiffusionPipeline, ModelMixin))
+    except ImportError:
+        return False
+
+
 def _is_enabled_quantizer(quantizer):
     if hasattr(quantizer, "is_enabled") and quantizer.is_enabled:
         return True
@@ -391,7 +408,128 @@ def _export_quantized_weight(
         sub_module.register_buffer(quantizer_attrs.weight_scale, weight_scale)
 
 
-def _export_hf_checkpoint(
+def _process_quantized_modules(
+    model: nn.Module,
+    dtype: torch.dtype,
+    is_modelopt_qlora: bool = False,
+) -> None:
+    """Process all quantized modules in model, export weights in-place.
+
+    This function iterates through all modules in the model and exports quantized weights
+    for modules that have quantization enabled. It handles both standard linear layers
+    and specialized expert modules (Llama4TextExperts, GptOssExperts).
+
+    Args:
+        model: The model containing quantized modules.
+        dtype: The data type for weight conversion.
+        is_modelopt_qlora: Whether the model is a modelopt-trained QLoRA model.
+            If True, modules with base_layer attribute are skipped.
+    """
+    fsdp_module_to_reshard = None
+
+    for _, sub_module in model.named_modules():
+        # Optimization to perform resharding only once per decoder layer to avoid extra communication overhead
+        if isinstance(sub_module, FSDPModule):
+            # Every time we encounter a new FSDPModule, the previous decoder layer is fully processed.
+            # We need to reshard the previous FSDPModule to prevent potential OOM.
+            # This hack reduces the number of unshard reshard operations, to avoid unnecessary communication.
+            if fsdp_module_to_reshard is not None:
+                fsdp_module_to_reshard.reshard()
+
+            fsdp_module_to_reshard = sub_module
+
+        # We skip QuantLoraLinear module for modelopt QLoRA
+        if is_modelopt_qlora and (hasattr(sub_module, "base_layer")):
+            continue
+
+        if get_quantization_format(sub_module) != QUANTIZATION_NONE:
+            if is_quantlinear(sub_module):
+                with fsdp2_aware_weight_update(model, sub_module, reshard=False):
+                    _export_quantized_weight(sub_module, dtype)
+            elif (
+                "Llama4TextExperts" in type(sub_module).__name__
+                or "GptOssExperts" in type(sub_module).__name__
+            ):
+                # TODO: consolidate uncalibrated experts handling logic
+                # Handle weight quantizers amax values using smart fallback logic
+                set_expert_quantizer_amax(
+                    modules=sub_module,
+                    quantizer_attrs=["gate_up_proj_weight_quantizer", "down_proj_weight_quantizer"],
+                )
+                # Handle input quantizers amax values using smart fallback logic
+                set_expert_quantizer_amax(
+                    modules=sub_module,
+                    quantizer_attrs=["gate_up_proj_input_quantizer", "down_proj_input_quantizer"],
+                )
+                # Export the quantized weights
+                with fsdp2_aware_weight_update(model, sub_module, reshard=False):
+                    for weight_name in ["gate_up_proj", "down_proj"]:
+                        _export_quantized_weight(sub_module, dtype, weight_name)
+
+
+def _build_quant_config(
+    model: nn.Module,
+    is_modelopt_qlora: bool = False,
+) -> dict[str, Any]:
+    """Build quantization config dict.
+
+    This is a thin wrapper around get_quant_config for API consistency.
+
+    Args:
+        model: The PyTorch model to make config for.
+        is_modelopt_qlora: Whether the model is a modelopt-trained QLoRA model.
+
+    Returns:
+        Dictionary containing the quantization configuration.
+    """
+    return get_quant_config(model, is_modelopt_qlora=is_modelopt_qlora)
+
+
+def _save_quantization_config(
+    export_dir: Path,
+    quant_config: dict[str, Any],
+    model_config: dict[str, Any] | None = None,
+) -> None:
+    """Save quantization config to model config file.
+
+    This function saves the quantization config in two formats:
+    1. A standalone hf_quant_config.json for backward compatibility
+    2. Merged into the model's config.json under "quantization_config" key
+
+    Args:
+        export_dir: The directory where config files are saved.
+        quant_config: The quantization configuration dictionary.
+        model_config: Optional model config dict. If provided, quant_config will be
+            merged into it under "quantization_config" key.
+    """
+    export_dir = Path(export_dir)
+
+    # Save hf_quant_config.json for backward compatibility
+    with open(f"{export_dir}/hf_quant_config.json", "w") as file:
+        json.dump(quant_config, file, indent=4)
+
+    # Convert to HF format
+    hf_quant_config = convert_hf_quant_config_format(quant_config)
+
+    # If model_config is provided, merge quantization config into it
+    if model_config is not None:
+        model_config["quantization_config"] = hf_quant_config
+        with open(f"{export_dir}/config.json", "w") as file:
+            json.dump(model_config, file, indent=4)
+    else:
+        # Just update the existing config.json if it exists
+        config_path = f"{export_dir}/config.json"
+        try:
+            with open(config_path) as file:
+                config_data = json.load(file)
+            config_data["quantization_config"] = hf_quant_config
+            with open(config_path, "w") as file:
+                json.dump(config_data, file, indent=4)
+        except FileNotFoundError:
+            pass  # No config.json to update
+
+
+def _export_transformers_checkpoint(
     model: nn.Module, dtype: torch.dtype | None = None, is_modelopt_qlora: bool = False, **kwargs
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Exports the torch model to the packed checkpoint with original HF naming.
@@ -498,47 +636,8 @@ def _export_hf_checkpoint(
     if kv_cache_format != QUANTIZATION_NONE:
         kv_cache_max_bound = cache_bound_mapping.get(kv_cache_format)
 
-    # Track if any layers are quantized to properly set exclude_modules
-    fsdp_module_to_reshard = None
-
-    for _, sub_module in model.named_modules():
-        # Optimization to perform resharding only once per decoder layer to avoid extra communication overhead
-        if isinstance(sub_module, FSDPModule):
-            # Every time we encounter a new FSDPModule, the previous decoder layer is fully processed.
-            # We need to reshard the previous FSDPModule to prevent potential OOM.
-            # This hack reduces the number of unshard reshard operations, to avoid unnecessary communication.
-            if fsdp_module_to_reshard is not None:
-                fsdp_module_to_reshard.reshard()
-
-            fsdp_module_to_reshard = sub_module
-
-        # We skip QuantLoraLinear module for modelopt QLoRA
-        if is_modelopt_qlora and (hasattr(sub_module, "base_layer")):
-            continue
-
-        if get_quantization_format(sub_module) != QUANTIZATION_NONE:
-            if is_quantlinear(sub_module):
-                with fsdp2_aware_weight_update(model, sub_module, reshard=False):
-                    _export_quantized_weight(sub_module, dtype)
-            elif (
-                "Llama4TextExperts" in type(sub_module).__name__
-                or "GptOssExperts" in type(sub_module).__name__
-            ):
-                # TODO: consolidate uncalibrated experts handling logic
-                # Handle weight quantizers amax values using smart fallback logic
-                set_expert_quantizer_amax(
-                    modules=sub_module,
-                    quantizer_attrs=["gate_up_proj_weight_quantizer", "down_proj_weight_quantizer"],
-                )
-                # Handle input quantizers amax values using smart fallback logic
-                set_expert_quantizer_amax(
-                    modules=sub_module,
-                    quantizer_attrs=["gate_up_proj_input_quantizer", "down_proj_input_quantizer"],
-                )
-                # Export the quantized weights
-                with fsdp2_aware_weight_update(model, sub_module, reshard=False):
-                    for weight_name in ["gate_up_proj", "down_proj"]:
-                        _export_quantized_weight(sub_module, dtype, weight_name)
+    # Process all quantized modules and export weights
+    _process_quantized_modules(model, dtype, is_modelopt_qlora)
 
     if accelerator is not None:
         # Gather state_dict from all ranks
@@ -553,25 +652,69 @@ def _export_hf_checkpoint(
     return quantized_state_dict, quant_config
 
 
+def _export_diffusers_checkpoint(
+    model: nn.Module,
+    dtype: torch.dtype | None,
+    export_dir: Path,
+    components: list[str] | None,
+    save_modelopt_state: bool,
+) -> None:
+    """Internal: Export quantized Diffusers model/pipeline checkpoint.
+
+    This function handles the export of quantized diffusers models, including
+    DiffusionPipeline and individual ModelMixin components.
+
+    Args:
+        model: The diffusers model or pipeline to export.
+        dtype: The data type for weight conversion. If None, will be inferred from model.
+        export_dir: The directory to save the exported checkpoint.
+        components: Optional list of component names to export. Only used for pipelines.
+            If None, all quantized components are exported.
+        save_modelopt_state: Whether to save the modelopt state_dict.
+
+    Raises:
+        NotImplementedError: This function is not yet implemented.
+    """
+    raise NotImplementedError(
+        "Diffusers checkpoint export is not yet implemented. "
+        "This feature is planned for a future release."
+    )
+
+
 def export_hf_checkpoint(
     model: nn.Module,
     dtype: torch.dtype | None = None,
     export_dir: Path | str = tempfile.gettempdir(),
     save_modelopt_state: bool = False,
+    components: list[str] | None = None,
 ):
-    """Exports the torch model to unified checkpoint and saves to export_dir.
+    """Export quantized HuggingFace model checkpoint (transformers or diffusers).
+
+    This function automatically detects whether the model is from transformers
+    or diffusers and applies the appropriate export logic.
 
     Args:
-        model: the full torch model to export. The actual quantized model may be a submodule.
-        dtype: the weights data type to export the unquantized layers or the default model data type if None.
-        export_dir: the target export path.
-        save_modelopt_state: whether to save the modelopt state_dict.
+        model: The full torch model to export. The actual quantized model may be a submodule.
+            Supports both transformers models (e.g., LlamaForCausalLM) and diffusers
+            models/pipelines (e.g., StableDiffusionPipeline, UNet2DConditionModel).
+        dtype: The weights data type to export the unquantized layers or the default
+            model data type if None.
+        export_dir: The target export path.
+        save_modelopt_state: Whether to save the modelopt state_dict.
+        components: Only used for diffusers pipelines. Optional list of component names
+            to export. If None, all quantized components are exported.
     """
     export_dir = Path(export_dir)
     export_dir.mkdir(parents=True, exist_ok=True)
 
+    # Auto-detect model type and dispatch
+    if _is_diffusers_model(model):
+        _export_diffusers_checkpoint(model, dtype, export_dir, components, save_modelopt_state)
+        return
+
+    # Transformers model export
     # NOTE: (hg) Early exit for speculative decoding models
-    # This is a temp workaround to avoid error with offline spec ckpt during _export_hf_checkpoint
+    # This is a temp workaround to avoid error with offline spec ckpt during export
     if spec_opt_only(model):
         save_file(export_spec_ckpt_state_dict(model), f"{export_dir}/model.safetensors")
         with open(f"{export_dir}/config.json", "w") as file:
@@ -579,10 +722,10 @@ def export_hf_checkpoint(
         return
 
     try:
-        post_state_dict, hf_quant_config = _export_hf_checkpoint(model, dtype)
+        post_state_dict, hf_quant_config = _export_transformers_checkpoint(model, dtype)
 
         if hf_quant_config is not None:
-            # Save hf_quant_config.json for\ backward compatibility
+            # Save hf_quant_config.json for backward compatibility
             with open(f"{export_dir}/hf_quant_config.json", "w") as file:
                 json.dump(hf_quant_config, file, indent=4)
 
