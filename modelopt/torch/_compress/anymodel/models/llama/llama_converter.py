@@ -41,12 +41,8 @@ class LlamaConverter(Converter):
         """
         num_hidden_layers = config.num_hidden_layers
 
-        # n_heads_in_group = num_attention_heads / num_key_value_heads
-        # This is the GQA group size (how many query heads share one KV head)
-        n_heads_in_group = config.num_attention_heads // config.num_key_value_heads
-
         block_config = BlockConfig(
-            attention=AttentionConfig(no_op=False, n_heads_in_group=n_heads_in_group),
+            attention=AttentionConfig(no_op=False, num_key_value_heads=config.num_key_value_heads),
             ffn=FFNConfig(no_op=False, intermediate_size=config.intermediate_size),
         ).to_dict()
 

@@ -49,7 +49,7 @@ class LlamaModelDescriptor(ModelDescriptor):
     def block_config_to_layer_overrides(block_config: BlockConfig):
         return {
             "intermediate_size": block_config.ffn.intermediate_size,
-            "num_key_value_heads": block_config.attention.n_heads_in_group,
+            "num_key_value_heads": block_config.attention.num_key_value_heads,
         }
 
     @staticmethod
