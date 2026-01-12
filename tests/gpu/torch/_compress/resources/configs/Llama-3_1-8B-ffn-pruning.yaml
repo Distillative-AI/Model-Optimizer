@@ -32,6 +32,7 @@ calc_subblock_stats:
   moe_stats_filename: "moe_stats.json"
 
 scoring:
+  descriptor: ${descriptor}
   solutions_to_validate:
   skip_existing_solutions: true
 

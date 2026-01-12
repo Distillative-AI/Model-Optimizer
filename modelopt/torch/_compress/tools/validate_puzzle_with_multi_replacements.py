@@ -47,6 +47,7 @@ from modelopt.torch._compress.tools.checkpoint_utils_hf import (
     save_checkpoint,
     save_safetensors_index,
 )
+from modelopt.torch._compress.tools.sharded_checkpoint_utils import load_and_shard_model
 from modelopt.torch._compress.tools.validation_utils import (
     validate_model_and_extract_hidden_states,
     validate_model_with_teacher_similarity_metrics,
@@ -145,7 +146,9 @@ def validate_puzzle_solutions(args: DictConfig) -> None:
 
     teacher_hidden_states = None
     if (args.teacher_dir is not None) and (not args.skip_validation):
-        teacher_model = replacement_library.load_checkpoint(args.teacher_dir)
+        teacher_model = load_and_shard_model(
+            checkpoint_path=args.teacher_dir, descriptor=descriptor
+        )
         teacher_model.cuda(dist.local_rank())
         stitched_model = perform_pipeline_stitches(teacher_model, descriptor=descriptor)
         teacher_hidden_states = validate_model_and_extract_hidden_states(
@@ -154,7 +157,6 @@ def validate_puzzle_solutions(args: DictConfig) -> None:
             tokenizer,
             output_dir,
             model_name="teacher",
-            pipeline_parallel=True,
             val_dataloader=val_dataloader,
         )
 
@@ -201,7 +203,6 @@ def validate_puzzle_solutions(args: DictConfig) -> None:
                 output_dir,
                 model_name=f"solution_{i_solution}",
                 extra_payload={"i_solution": i_solution, "puzzle_solution": puzzle_solution},
-                pipeline_parallel=True,
                 val_dataloader=val_dataloader,
             )
 
