@@ -126,6 +126,7 @@ def dict_to_config(
         "parallel_draft_heads_num_layers"
     )
     config.has_lm_head = architecture_config.get("has_lm_head")
+    config.sliding_window = architecture_config.get("sliding_window")
 
     return config
 

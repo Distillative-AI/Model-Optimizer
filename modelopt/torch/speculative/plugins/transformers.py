@@ -99,7 +99,7 @@ class SWALlamaDecoderLayer(LlamaDecoderLayer):
         )
         # Sliding Window Attention
         if hasattr(self, "swa"):
-            swa_hidden_states = self.swa(
+            swa_hidden_states, _ = self.swa(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
