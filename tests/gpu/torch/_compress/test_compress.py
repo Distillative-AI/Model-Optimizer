@@ -44,6 +44,7 @@ from modelopt.torch._compress.anymodel import convert_model
     [
         ("llama_3_1_8b_instruct", "llama", "llama_3_1_8b_instruct", None, False),
         ("llama_3_2_3b_instruct", "llama", "llama_3_1_8b_instruct", None, False),
+        ("qwen2_5_7b_instruct", "qwen2", "qwen2_5_7b_instruct", None, False),
     ],
 )
 def test_compress(
@@ -153,6 +154,12 @@ EXPECTED_PRUNING_VALUES = {
         "layer_1_score": 428,
         "layer_1_channels": 174,
     },
+    "qwen2_5_7b_instruct": {
+        "layer_0_score": 96,
+        "layer_0_channels": 433,
+        "layer_1_score": 485,
+        "layer_1_channels": 105,
+    },
 }
 
 
@@ -160,6 +167,7 @@ EXPECTED_PRUNING_VALUES = {
 EXPECTED_LM_LOSS = {
     "llama_3_1_8b_instruct": 4.706878662109375,
     "llama_3_2_3b_instruct": 4.816886901855469,
+    "qwen2_5_7b_instruct": 4.778186798095703,
 }
 
 
