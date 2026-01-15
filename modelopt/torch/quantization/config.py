@@ -411,7 +411,7 @@ NVFP4_WEIGHT_ACT_MSE_CFG = {
     },
 }
 
-NVFP4_WEIGHT_MSE_CFG = {
+NVFP4_WEIGHT_MSE_FP8_SWEEP_CFG = {
     "quant_cfg": {
         "*weight_quantizer": {
             "num_bits": (2, 1),
@@ -426,9 +426,6 @@ NVFP4_WEIGHT_MSE_CFG = {
     },
     "algorithm": {
         "method": "mse",
-        # "step_size": 0.5,
-        # "start_multiplier": 0.25,
-        # "stop_multiplier": 2.0,
         "fp8_scale_sweep": True,
     },
 }

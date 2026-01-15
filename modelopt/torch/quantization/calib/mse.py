@@ -109,13 +109,6 @@ class MseCalibrator(_Calibrator):
             fp8_values_valid = fp8_values[valid_mask]
 
             candidates = fp8_values_valid / 448.0
-
-            print(
-                f"FP8 scale sweep: trying {len(candidates)} valid FP8 E4M3 multipliers (out of 128 total)"
-            )
-            print(
-                f"Multiplier range: {candidates.min().item():.6e} to {candidates.max().item():.6e}"
-            )
         else:
             candidates = torch.linspace(
                 self._start_multiplier, self._stop_multiplier, steps=self._num_steps, device=device
