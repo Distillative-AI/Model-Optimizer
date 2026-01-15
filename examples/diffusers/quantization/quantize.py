@@ -59,6 +59,7 @@ from utils import (
     check_conv_and_mha,
     check_lora,
     filter_func_default,
+    filter_func_flux_dev,
     filter_func_ltx_video,
     filter_func_wan_video,
     load_calib_prompts,
@@ -138,7 +139,7 @@ def get_model_filter_func(model_type: ModelType) -> Callable[[str], bool]:
         A filter function appropriate for the model type
     """
     filter_func_map = {
-        ModelType.FLUX_DEV: filter_func_default,
+        ModelType.FLUX_DEV: filter_func_flux_dev,
         ModelType.FLUX_SCHNELL: filter_func_default,
         ModelType.SDXL_BASE: filter_func_default,
         ModelType.SDXL_TURBO: filter_func_default,
