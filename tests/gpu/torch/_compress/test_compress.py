@@ -52,6 +52,7 @@ from modelopt.torch._compress.anymodel import convert_model
             None,
             False,
         ),
+        ("qwen3-8b", "qwen3", "qwen3-8b", None, False),
         ("nemotron-nano-12b-v2", "nemotron_h_v2", "nemotron-nano-12b-v2", "*-", False),
         (
             "nemotron-3-nano-30b-a3b-base-bf16",
@@ -193,6 +194,11 @@ EXPECTED_PRUNING_VALUES = {
         {"score": 73, "channels": 95},
         {"score": 431, "channels": 174},
     ],
+    # Qwen3 8B
+    "qwen3-8b": [
+        {"score": 208, "channels": 51},
+        {"score": 475, "channels": 266},
+    ],
     # NemotronH with pattern "*-" has only 1 FFN layer (the "-" layer)
     "nemotron-nano-12b-v2": [
         {"score": 70, "channels": 509},
@@ -209,6 +215,7 @@ EXPECTED_LM_LOSS = {
     "qwen2_5_7b_instruct": 4.778186798095703,
     "nemotron-nano-12b-v2": 4.79390811920166,
     "mistral-small-24b-instruct-2501": 4.709150314331055,
+    "qwen3-8b": 4.733874320983887,
     # Note: nemotron-3-nano-30b-a3b-base-bf16 uses MoE expert pruning with different MIP path
 }
 
