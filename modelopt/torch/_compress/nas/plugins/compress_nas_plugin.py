@@ -119,7 +119,9 @@ def convert_compress_model(model: nn.Module, config: CompressConfig) -> ConvertR
 
     # Convert HuggingFace model to Puzzletron heterogeneous format (generic, uses descriptor from config)
     if dist.is_master():
-        mprint("Compress Progress 2/8: converting model to Puzzletron hete format (single-gpu)")
+        mprint(
+            "Compress Progress 2/8: converting model to Puzzletron heterogeneous format (single-gpu)"
+        )
         hf_ckpt_teacher_dir = "ckpts/teacher"  # TODO: make it configurable
 
         # Get descriptor and converter from the hydra config
