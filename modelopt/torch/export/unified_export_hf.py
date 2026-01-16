@@ -26,12 +26,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import diffusers
 import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
 try:
+    import diffusers
     from diffusers import DiffusionPipeline, ModelMixin
 
     HAS_DIFFUSERS = True
