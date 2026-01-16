@@ -291,12 +291,8 @@ def is_qkv_projection(module_name: str) -> bool:
         "to_added_v",
     ]
 
-    # Check if the last part matches any QKV pattern
-    if last_part in qkv_patterns:
-        return True
-
-    # Also check second-to-last for cases like "attn.to_q.weight"
-    return second_last in qkv_patterns
+    # Check last or second-to-last for cases like "attn.to_q.weight"
+    return last_part in qkv_patterns or second_last in qkv_patterns
 
 
 def get_qkv_group_key(module_name: str) -> str:
