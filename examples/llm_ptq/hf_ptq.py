@@ -772,7 +772,9 @@ def export_quantized(
     default_pad_token,
 ):
     if model_type == "qwen3omni":
-        print("Export of Qwen3Omni model is not supported yet")
+        print("Export of Qwen3Omni model is not supported yet. Saving .pt file instead.")
+        os.makedirs(os.path.dirname(args.export_path), exist_ok=True)
+        mto.save(model, args.export_path)
         return
 
     with torch.inference_mode():
