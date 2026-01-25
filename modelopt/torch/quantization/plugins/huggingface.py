@@ -48,6 +48,7 @@ from ..algorithms import AutoQuantizeGradientSearcher
 from ..conversion import register
 from ..nn import QuantInputBase, QuantModule, QuantModuleRegistry, TensorQuantizer
 from ..nn.modules.quant_linear import _QuantLinear
+from ..triton.fp8_kernel import weight_dequant
 from ..utils import replace_function
 from .attention import register_attention_for_kv_quant
 from .custom import CUSTOM_MODEL_PLUGINS, _ParallelLinear, _QuantFunctionalMixin
@@ -693,6 +694,48 @@ class _QuantCompressedLinear(QuantModule):
             del self.weight_scale
 
 
+class _QuantFP8Linear(QuantModule):
+    def _setup(self):
+        self.input_quantizer = TensorQuantizer()
+        self.weight_quantizer = TensorQuantizer()
+        assert self.weight_scale_inv.ndim == 2, "Weight scale inverse must be 2D"
+        assert self.weight.ndim == 2, "Weight must be 2D"
+        self.block_size = self.weight.shape[0] // self.weight_scale_inv.shape[0]
+        assert self.weight.shape[1] // self.weight_scale_inv.shape[1] == self.block_size
+
+    def _get_weight_and_scale_inv(self):
+        if isinstance(self.weight, torch.distributed.tensor.DTensor):
+            weight = self.weight._local_tensor.contiguous()
+            scale_inv = self.weight_scale_inv._local_tensor.contiguous()
+        else:
+            weight = self.weight.contiguous()
+            scale_inv = self.weight_scale_inv.contiguous()
+        return weight, scale_inv
+
+    def forward(self, input: Tensor) -> Tensor:
+        if self.weight.element_size() == 1:
+            with torch.cuda.device(self.weight.device):
+                weight, scale_inv = self._get_weight_and_scale_inv()
+                weight = weight_dequant(weight, scale_inv, self.block_size, dtype=input.dtype)
+        else:
+            weight = self.weight
+        return linear(
+            self.input_quantizer(input),
+            self.weight_quantizer(weight),
+            self.bias,
+        )
+
+    def unpack_weight(self):
+        with torch.cuda.device(self.weight.device):
+            weight, scale_inv = self._get_weight_and_scale_inv()
+            self.weight = nn.Parameter(
+                weight_dequant(weight, scale_inv, self.block_size),
+                requires_grad=False,
+            )
+        if hasattr(self, "weight_scale_inv"):
+            del self.weight_scale_inv
+
+
 try:
     from transformers.models.llama4.modeling_llama4 import Llama4TextExperts, Llama4TextMoe
 
@@ -793,6 +836,14 @@ try:
         QuantModuleRegistry.register({Qwen3VLMoeTextExperts: "hf.Qwen3VLMoeTextExperts"})(
             _QuantQwen3VLMoeTextExperts
         )
+except ImportError:
+    pass
+
+try:
+    from transformers.integrations.finegrained_fp8 import FP8Linear
+
+    if FP8Linear not in QuantModuleRegistry:
+        QuantModuleRegistry.register({FP8Linear: "hf.FP8Linear"})(_QuantFP8Linear)
 except ImportError:
     pass
 
