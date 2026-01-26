@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from collections.abc import Callable
 from enum import Enum
 from typing import Any
@@ -208,3 +209,48 @@ MODEL_DEFAULTS: dict[ModelType, dict[str, Any]] = {
         },
     },
 }
+
+
+def _coerce_extra_param_value(value: str) -> Any:
+    lowered = value.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def parse_extra_params(
+    kv_args: list[str], unknown_args: list[str], logger: logging.Logger
+) -> dict[str, Any]:
+    extra_params: dict[str, Any] = {}
+    for item in kv_args:
+        if "=" not in item:
+            raise ValueError(f"Invalid --extra-param value: '{item}'. Expected KEY=VALUE.")
+        key, value = item.split("=", 1)
+        extra_params[key] = _coerce_extra_param_value(value)
+
+    i = 0
+    while i < len(unknown_args):
+        token = unknown_args[i]
+        if token.startswith("--extra_param."):
+            key = token[len("--extra_param.") :]
+            value = "true"
+            if i + 1 < len(unknown_args) and not unknown_args[i + 1].startswith("--"):
+                value = unknown_args[i + 1]
+                i += 1
+            extra_params[key] = _coerce_extra_param_value(value)
+        elif token.startswith("--extra_param"):
+            raise ValueError(
+                "Use --extra_param.KEY VALUE or --extra-param KEY=VALUE for extra parameters."
+            )
+        else:
+            logger.warning("Ignoring unknown argument: %s", token)
+        i += 1
+
+    return extra_params
