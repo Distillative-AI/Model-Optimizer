@@ -224,7 +224,7 @@ def _fuse_shared_input_modules(
 
                     # Fuse each group separately
                     for group_key, group_modules in qkv_groups.items():
-                        if len(group_modules) == 3:
+                        if len(group_modules) >= 2:
                             preprocess_linear_fusion(group_modules, resmooth_only=False)
                             fused_count += 1
                             module_names = [getattr(m, "name", "unknown") for m in group_modules]
