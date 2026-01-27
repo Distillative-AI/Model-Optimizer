@@ -26,14 +26,6 @@ from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import (
     Qwen3VLMoeVisionRotaryEmbedding,
 )
 
-from modelopt.torch._compress.decilm.deci_lm_hf_code.block_config import BlockConfig
-from modelopt.torch._compress.pruning.expert_removal_pruning_mixin import (
-    ExpertRemovalLayerDescriptor,
-)
-from modelopt.torch._compress.pruning.ffn_intermediate_pruning_mixin import (
-    FFNIntermediateLayerDescriptor,
-)
-from modelopt.torch._compress.pruning.kv_heads_pruning_mixin import KVHeadsLayerDescriptor
 from modelopt.torch.puzzletron.anymodel.model_descriptor import (
     ModelDescriptor,
     ModelDescriptorFactory,
@@ -43,6 +35,14 @@ from modelopt.torch.puzzletron.anymodel.puzzformer.no_op import (
     Same,
     return_tuple_of_size,
 )
+from modelopt.torch.puzzletron.decilm.deci_lm_hf_code.block_config import BlockConfig
+from modelopt.torch.puzzletron.pruning.expert_removal_pruning_mixin import (
+    ExpertRemovalLayerDescriptor,
+)
+from modelopt.torch.puzzletron.pruning.ffn_intermediate_pruning_mixin import (
+    FFNIntermediateLayerDescriptor,
+)
+from modelopt.torch.puzzletron.pruning.kv_heads_pruning_mixin import KVHeadsLayerDescriptor
 
 
 @ModelDescriptorFactory.register_decorator("qwen3_vl")

@@ -20,8 +20,8 @@ from typing import Any, Dict, Iterable, List, Type
 
 import torch.nn as nn
 
-from modelopt.torch._compress.decilm.deci_lm_hf_code.block_config import BlockConfig
-from modelopt.torch._compress.utils.dummy_modules import DummyBlock
+from modelopt.torch.puzzletron.decilm.deci_lm_hf_code.block_config import BlockConfig
+from modelopt.torch.puzzletron.utils.dummy_modules import DummyBlock
 
 __all__ = ["ModelDescriptor"]
 

@@ -28,9 +28,9 @@ from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 from transformers import PretrainedConfig
 
-from modelopt.torch._compress.decilm.deci_lm_hf_code.block_config import BlockConfig
-from modelopt.torch._compress.tools.checkpoint_utils_hf import load_model_config, save_model_config
 from modelopt.torch.puzzletron.anymodel.model_descriptor import ModelDescriptor
+from modelopt.torch.puzzletron.decilm.deci_lm_hf_code.block_config import BlockConfig
+from modelopt.torch.puzzletron.tools.checkpoint_utils_hf import load_model_config, save_model_config
 
 __all__ = ["Converter"]
 

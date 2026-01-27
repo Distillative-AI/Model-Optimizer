@@ -80,26 +80,6 @@ extend-ignore = [
     "D",
     "E501",
 ] # Ignore missing docstrings or line length for Jupyter notebooks
-"modelopt/torch/_compress/*" = [
-    "C4",
-    "D",
-    "E",
-    "F",
-    "FURB",
-    "ISC",
-    "N",
-    "PERF",
-    "PGH",
-    "PIE",
-    "PLE",
-    "PLR",
-    "PT",
-    "RUF",
-    "SIM",
-    "TC",
-    "UP",
-    "W",
-] # Disabled for now, will enable later, once all puzzletron code is migrated
 "modelopt/torch/puzzletron/*" = [
     "C4",
     "D",

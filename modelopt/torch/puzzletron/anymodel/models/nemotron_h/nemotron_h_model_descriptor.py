@@ -24,17 +24,17 @@ from typing import Dict, Iterable, List, Tuple, Type
 
 import torch.nn as nn
 
-from modelopt.torch._compress.decilm.deci_lm_hf_code.block_config import BlockConfig
-from modelopt.torch._compress.pruning.expert_removal_pruning_mixin import (
-    ExpertRemovalLayerDescriptor,
-    ExpertRemovalPruningMixIn,
-)
-from modelopt.torch._compress.pruning.pruning_mixin import PruningMixIn
 from modelopt.torch.puzzletron.anymodel.model_descriptor import (
     ModelDescriptor,
     ModelDescriptorFactory,
 )
 from modelopt.torch.puzzletron.anymodel.puzzformer.no_op import MatchingZeros, Same
+from modelopt.torch.puzzletron.decilm.deci_lm_hf_code.block_config import BlockConfig
+from modelopt.torch.puzzletron.pruning.expert_removal_pruning_mixin import (
+    ExpertRemovalLayerDescriptor,
+    ExpertRemovalPruningMixIn,
+)
+from modelopt.torch.puzzletron.pruning.pruning_mixin import PruningMixIn
 
 
 def get_dynamic_modules(module_cls_str: str) -> List[Type[nn.Module]]:

@@ -26,10 +26,6 @@ from transformers.models.llama.modeling_llama import (
     LlamaRotaryEmbedding,
 )
 
-from modelopt.torch._compress.decilm.deci_lm_hf_code.block_config import BlockConfig
-from modelopt.torch._compress.pruning.ffn_intermediate_pruning_mixin import (
-    FFNIntermediateLayerDescriptor,
-)
 from modelopt.torch.puzzletron.anymodel.model_descriptor import (
     ModelDescriptor,
     ModelDescriptorFactory,
@@ -38,6 +34,10 @@ from modelopt.torch.puzzletron.anymodel.puzzformer.no_op import (
     MatchingZeros,
     Same,
     return_tuple_of_size,
+)
+from modelopt.torch.puzzletron.decilm.deci_lm_hf_code.block_config import BlockConfig
+from modelopt.torch.puzzletron.pruning.ffn_intermediate_pruning_mixin import (
+    FFNIntermediateLayerDescriptor,
 )
 
 

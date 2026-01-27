@@ -27,8 +27,6 @@ from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2RotaryEmbedding,
 )
 
-from modelopt.torch._compress.decilm.deci_lm_hf_code.block_config import BlockConfig
-from modelopt.torch._compress.utils.dummy_modules import DummyBlock
 from modelopt.torch.puzzletron.anymodel.model_descriptor import (
     ModelDescriptor,
     ModelDescriptorFactory,
@@ -41,6 +39,8 @@ from modelopt.torch.puzzletron.anymodel.puzzformer.no_op import (
     Same,
     return_tuple_of_size,
 )
+from modelopt.torch.puzzletron.decilm.deci_lm_hf_code.block_config import BlockConfig
+from modelopt.torch.puzzletron.utils.dummy_modules import DummyBlock
 
 
 @ModelDescriptorFactory.register_decorator("qwen2")

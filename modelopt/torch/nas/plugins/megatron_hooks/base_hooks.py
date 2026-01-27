@@ -27,9 +27,9 @@ from omegaconf import DictConfig, OmegaConf
 from torch import nn
 
 import modelopt.torch.utils.distributed as dist
-from modelopt.torch._compress.decilm.deci_lm_hf_code.block_config import BlockConfig  # noqa: TC001
-from modelopt.torch._compress.tools.logger import aprint
-from modelopt.torch._compress.tools.robust_json import json_dump
+from modelopt.torch.puzzletron.decilm.deci_lm_hf_code.block_config import BlockConfig  # noqa: TC001
+from modelopt.torch.puzzletron.tools.logger import aprint
+from modelopt.torch.puzzletron.tools.robust_json import json_dump
 
 __all__ = [
     "ForwardHook",
