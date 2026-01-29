@@ -110,6 +110,7 @@ class QuantInputBase(QuantModule):
     def forward(self, input, *args, **kwargs):
         """Quantize the input before calling the original forward method."""
         input = self.input_quantizer(input)
+        # Check MR: https://github.com/NVIDIA/Model-Optimizer/pull/824
         if hasattr(self, "_forward_pre_dm"):
             pre_fwd = getattr(self, "_forward_pre_dm")
 
