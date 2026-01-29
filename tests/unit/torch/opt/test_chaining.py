@@ -246,14 +246,19 @@ def test_sparse_quantize_kd_linear_forward_backward():
     model = SimpleLinearModel()
     teacher_model = SimpleLinearModel()
 
-    def patched_forward(x):
-        called["patched_forward"] += 1
-        w = model.linear.weight
-        b = model.linear.bias if model.linear.bias is not None else None
-        return F.linear(x, w, b)
+    called = {"patched_forward": 0, "input_q": 0, "weight_q": 0, "pass": 0}
 
-    model.linear.forward = patched_forward
-    teacher_model.linear.forward = patched_forward
+    def _make_patched_forward(linear):
+        def patched_forward(x):
+            called["patched_forward"] += 1
+            w = linear.weight
+            b = linear.bias if linear.bias is not None else None
+            return F.linear(x, w, b)
+
+        return patched_forward
+
+    model.linear.forward = _make_patched_forward(model.linear)
+    teacher_model.linear.forward = _make_patched_forward(teacher_model.linear)
 
     def _get_linear_kd_mode():
         config = {
@@ -266,8 +271,6 @@ def test_sparse_quantize_kd_linear_forward_backward():
     model = mto.apply_mode(model, mode="sparse_magnitude", init_state=True)
     model = mto.apply_mode(model, mode="quantize")
     model = mto.apply_mode(model, mode=_get_linear_kd_mode())
-
-    called = {"patched_forward": 0, "input_q": 0, "weight_q": 0, "pass": 0}
 
     def _count_quant_input(_m, _inp, _out):
         called["input_q"] += 1
