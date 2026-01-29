@@ -557,6 +557,11 @@ def local_hessian_calibrate(
                     helper.accumulate_global_hessian(helper._cached_input, grad_out.detach())
                 helper._cached_input = None
 
+    # First, run max_calibrate on the whole model to get initial amax for all quantizers
+    # This calibrates both weight_quantizer and input_quantizer with max calibration
+    print_rank_0("local_hessian: Running max calibration for all quantizers...")
+    max_calibrate(model, forward_loop, distributed_sync)
+
     # Setup helpers for all quantized linear modules
     name_to_module = dict(model.named_modules())
     weight_quantizers_info = []
@@ -573,7 +578,7 @@ def local_hessian_calibrate(
                     handle = module.register_full_backward_hook(backward_hook)
                     module.local_hessian._backward_hook_handle = handle
 
-    # Cache activations by running forward loop
+    # Cache activations by running forward loop for Hessian collection
     LocalHessianHelper.cache_mode = True
     hessian_type_str = "global" if use_global_hessian else "local"
     print_rank_0(f"local_hessian: Caching activations and computing {hessian_type_str} Hessian...")
@@ -673,11 +678,8 @@ def local_hessian_calibrate(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Get initial amax using max calibration on weights
-    print_rank_0("local_hessian: Computing initial amax with max calibration...")
-    for name, module in weight_quantizers_info:
-        with enable_weight_access_and_writeback(module, model, name_to_module):
-            max_calibrate(module, lambda m: m.weight_quantizer(m.weight), distributed_sync)
+    # Note: initial amax for all quantizers (weight and input) was already set by
+    # max_calibrate at the beginning of this function
 
     # Replace calibrators with MseCalibrator using Hessian error function
     print_rank_0(f"local_hessian: Running MSE calibration with {hessian_type_str} Hessian loss...")
@@ -733,6 +735,8 @@ def local_hessian_calibrate(
             fp8_scale_sweep=is_nvfp4_per_block,
         )
 
+    # Free cached memory before heavy calibration
+    torch.cuda.empty_cache()
     # Calibrate weights with local Hessian MSE
     for name, module in weight_quantizers_info:
         weight_quantizer = module.weight_quantizer

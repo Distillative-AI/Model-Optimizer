@@ -71,6 +71,7 @@ def _quantize_model_with_dataset(
     batch_size=1,
     compress=False,
     auto_quantize_checkpoint=None,
+    use_global_hessian=False,
 ):
     if hasattr(lm, "gpt2"):
         net = lm.gpt2
@@ -139,7 +140,7 @@ def _quantize_model_with_dataset(
             #         model(**data)
             #
             # We also provided a util method to generate the forward_loop with additional error handlings.
-            calibrate_loop = create_forward_loop(dataloader=calib_dataset)
+            calibrate_loop = create_forward_loop(dataloader=calib_dataset, enable_backward=use_global_hessian)
 
         quantize_bmm_attention = False
         for key in mtq_cfg["quant_cfg"]:
@@ -195,11 +196,54 @@ def quantize_model(
             "Consider reducing calib_size to reduce calibration time.\n####\n"
         )
 
-    device = model.device
-    if hasattr(model, "model"):
-        device = model.model.device
+    # Handle device_map="auto" case where model is distributed across GPUs
+    net = model.gpt2 if hasattr(model, "gpt2") else model.model
+    
+    # Check for hf_device_map at multiple levels (model structure varies)
+    hf_device_map = None
+    for obj in [net, getattr(net, 'model', None), getattr(net, 'transformer', None)]:
+        if obj is not None and hasattr(obj, "hf_device_map") and obj.hf_device_map:
+            hf_device_map = obj.hf_device_map
+            break
+    
+    if hf_device_map:
+        # Model is distributed - use the first device (where embedding layer is)
+        # Accelerate hooks will handle moving tensors between devices during forward
+        devices_used = set(hf_device_map.values())
+        # Find the device for embed_tokens or first layer (usually cuda:0)
+        first_device = hf_device_map.get('model.embed_tokens', 
+                       hf_device_map.get('embed_tokens',
+                       min(devices_used) if all(isinstance(d, int) for d in devices_used) else 0))
+        device = f"cuda:{first_device}" if isinstance(first_device, int) else first_device
+        print(f"[INFO] Model uses device_map, distributed across {len(devices_used)} devices: {devices_used}")
+        print(f"[INFO] Using {device} for calibration inputs (embedding layer device)")
+    else:
+        device = model.device
+        if hasattr(model, "model"):
+            device = model.model.device
+        print(f"[INFO] Model on single device: {device}")
 
     is_gradient_based = auto_quantize_bits is not None and auto_quantize_method == "gradient"
+
+    # Check if global hessian calibration is needed
+    use_global_hessian = False
+    if isinstance(quant_cfg, str):
+        mtq_cfg = CUSTOM_CONFIG.get(quant_cfg)
+        if mtq_cfg is None:
+            mtq_cfg = getattr(mtq, quant_cfg, None)
+        if mtq_cfg is not None and isinstance(mtq_cfg, dict):
+            algorithm_cfg = mtq_cfg.get("algorithm", {})
+            if isinstance(algorithm_cfg, dict):
+                use_global_hessian = (
+                    algorithm_cfg.get("method") == "local_hessian"
+                    and algorithm_cfg.get("hessian_type") == "global"
+                )
+    
+    # Global hessian also needs labels for backward pass
+    needs_labels = is_gradient_based or use_global_hessian
+    
+    if use_global_hessian:
+        print("[INFO] Global Hessian calibration detected - enabling backward pass for calibration")
 
     if batch_size == 0:
         if is_gradient_based or torch.distributed.is_initialized():
@@ -217,7 +261,7 @@ def quantize_model(
         batch_size=batch_size,
         num_samples=calib_size,
         device=device,
-        include_labels=is_gradient_based,
+        include_labels=needs_labels,
     )
 
     if test_generated:
@@ -234,6 +278,7 @@ def quantize_model(
         batch_size,
         compress,
         auto_quantize_checkpoint,
+        use_global_hessian,
     )
 
     if test_generated:

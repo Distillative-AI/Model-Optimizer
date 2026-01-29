@@ -34,7 +34,7 @@ from modelopt.torch.utils.dataset_utils import get_dataset_dataloader
 
 def convert_amax_hf2vllm(
     hf_state_dict: dict[str, torch.Tensor], fuse_experts: bool = False
-) -> dict[str, torch.Tensor]:
+) -> tuple[dict[str, torch.Tensor], dict[str, list[int]]]:
     """
     Convert amax values from HuggingFace format to vLLM format.
 
@@ -46,9 +46,13 @@ def convert_amax_hf2vllm(
         hf_state_dict: HuggingFace state dict containing amax values
 
     Returns:
-        vLLM format state dict with merged amax values
+        Tuple of (vLLM format state dict with merged amax values,
+                  dict mapping merged keys to component sizes for TP sharding)
     """
     vllm_state_dict = {}
+    # Track component sizes for merged projections (needed for proper TP sharding)
+    # e.g., {"model.layers.0.self_attn.qkv_proj.weight_quantizer._amax": [q_size, k_size, v_size]}
+    merged_component_sizes: dict[str, list[int]] = {}
 
     # Group keys by their base pattern (without the specific projection name)
     merge_groups = defaultdict(list)
@@ -107,30 +111,69 @@ def convert_amax_hf2vllm(
         # Copy other amax keys as-is (like o_proj, down_proj)
         vllm_state_dict[key] = value
 
+    # Define the expected order for merged projections
+    # vLLM expects: qkv_proj = [Q, K, V], gate_up_proj = [gate, up]
+    def get_sort_key(key_value_tuple):
+        key = key_value_tuple[0]
+        # For QKV projections: ensure order is q, k, v
+        if "q_proj" in key:
+            return 0
+        elif "k_proj" in key:
+            return 1
+        elif "v_proj" in key:
+            return 2
+        # For gate/up projections: ensure order is gate, up
+        elif "gate_proj" in key or "gate" in key:
+            return 0
+        elif "up_proj" in key or "up" in key:
+            return 1
+        # Default: sort alphabetically
+        return key
+
     # Merge grouped amax values
     for merged_key, key_value_pairs in merge_groups.items():
         if len(key_value_pairs) > 1:
-            values = [value for _, value in key_value_pairs]
+            # Sort to ensure correct concatenation order
+            key_value_pairs_sorted = sorted(key_value_pairs, key=get_sort_key)
+            values = [value for _, value in key_value_pairs_sorted]
             shapes = [v.shape for v in values]
             is_weight_quantizer = "weight_quantizer" in merged_key
 
+            # Check if all values are scalars (0-dimensional tensors)
+            # This happens with per-tensor quantization (e.g., NVFP4_DEFAULT_CFG)
+            all_scalars = all(v.ndim == 0 for v in values)
+
             if is_weight_quantizer:
-                # Weight quantizers: always concatenate because vLLM fuses weights
-                # by concatenation (qkv_proj = concat(q, k, v), gate_up_proj = concat(gate, up))
-                merged_value = torch.cat(values, dim=0)
-                vllm_state_dict[merged_key] = merged_value
-                print(
-                    f"Concatenated {len(key_value_pairs)} weight amax keys into {merged_key} "
-                    f"(shapes {shapes} -> {merged_value.shape})"
-                )
-                for orig_key, _ in key_value_pairs:
+                # Weight quantizers: vLLM fuses weights by concatenation
+                # (qkv_proj = concat(q, k, v), gate_up_proj = concat(gate, up))
+                if all_scalars:
+                    # For scalar amax (per-tensor quantization), take max after fusing
+                    # because the fused weight needs a single amax that covers all parts
+                    merged_value = torch.stack(values).max()
+                    vllm_state_dict[merged_key] = merged_value
+                    print(
+                        f"Merged {len(key_value_pairs)} scalar weight amax keys into {merged_key} "
+                        f"(taking max of scalars -> scalar)"
+                    )
+                else:
+                    # For per-channel amax, concatenate along the channel dimension
+                    merged_value = torch.cat(values, dim=0)
+                    vllm_state_dict[merged_key] = merged_value
+                    # Store component sizes for proper TP sharding later
+                    # vLLM shards each component (Q/K/V or gate/up) separately
+                    merged_component_sizes[merged_key] = [v.shape[0] for v in values]
+                    print(
+                        f"Concatenated {len(key_value_pairs_sorted)} weight amax keys into {merged_key} "
+                        f"(shapes {shapes} -> {merged_value.shape})"
+                    )
+                for orig_key, _ in key_value_pairs_sorted:
                     print(f"  - {orig_key}")
             # Input quantizers: take max (they share the same input tensor)
-            elif all(s == shapes[0] for s in shapes):
+            elif all_scalars or all(s == shapes[0] for s in shapes):
                 merged_value = torch.stack(values).max(dim=0)[0]
                 vllm_state_dict[merged_key] = merged_value
-                print(f"Merged {len(key_value_pairs)} input amax keys into {merged_key}")
-                for orig_key, _ in key_value_pairs:
+                print(f"Merged {len(key_value_pairs_sorted)} input amax keys into {merged_key}")
+                for orig_key, _ in key_value_pairs_sorted:
                     print(f"  - {orig_key}")
             else:
                 # Different shapes for input quantizers - this shouldn't happen normally
@@ -141,14 +184,14 @@ def convert_amax_hf2vllm(
                     f"Warning: Input quantizer amax shapes differ {shapes}, "
                     f"taking max for {merged_key}"
                 )
-                for orig_key, _ in key_value_pairs:
+                for orig_key, _ in key_value_pairs_sorted:
                     print(f"  - {orig_key}")
         else:
             # Single key, just rename it
             _, value = key_value_pairs[0]
             vllm_state_dict[merged_key] = value
 
-    return vllm_state_dict
+    return vllm_state_dict, merged_component_sizes
 
 
 @contextmanager
@@ -329,7 +372,7 @@ def _fakequant_run_prolog_worker(self) -> None:
                 for key, value in saved_amax_dict.items()
                 if key.endswith("quantizer_amax")
             }
-        saved_amax_dict = convert_amax_hf2vllm(saved_amax_dict, fuse_experts=True)
+        saved_amax_dict, merged_component_sizes = convert_amax_hf2vllm(saved_amax_dict, fuse_experts=True)
 
         current_state_dict = model.state_dict()
         # Count amax keys in checkpoint and model
@@ -354,9 +397,145 @@ def _fakequant_run_prolog_worker(self) -> None:
                 f"amax keys but model has {model_amax_count} amax keys. This can happen if the model is using PP."
             )
 
-        # Update amax values
+        # Update amax values with tensor parallelism support
+        # When using TP, amax values need to be sharded to match the model's weight sharding
+        tp_size = 1
+        tp_rank = 0
+        if torch.distributed.is_initialized():
+            from vllm.distributed import get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size
+            tp_size = get_tensor_model_parallel_world_size()
+            tp_rank = get_tensor_model_parallel_rank()
+
         for key, value in saved_amax_dict.items():
             if key in current_state_dict:
+                model_shape = current_state_dict[key].shape
+                ckpt_shape = value.shape
+
+                # Handle tensor parallelism sharding for non-scalar amax
+                if model_shape != ckpt_shape and value.ndim > 0:
+                    # The checkpoint has full (unsharded) amax, but model has TP-sharded amax
+                    # Shard the checkpoint amax to match the model's sharding
+                    if tp_size > 1 and ckpt_shape[0] == model_shape[0] * tp_size:
+                        # Check if this is a merged projection (qkv_proj, gate_up_proj)
+                        # that needs component-wise sharding
+                        if key in merged_component_sizes:
+                            # For merged projections, vLLM shards EACH component separately
+                            # e.g., qkv_proj amax = [Q_amax, K_amax, V_amax]
+                            # Rank 0 should get: [Q_amax_first_half, K_amax_first_half, V_amax_first_half]
+                            # NOT: [Q_amax_all, K_amax_none, V_amax_none]
+                            component_sizes = merged_component_sizes[key]
+
+                            # Split the concatenated amax into components
+                            components = torch.split(value, component_sizes, dim=0)
+
+                            # Shard each component separately
+                            sharded_components = []
+                            for comp in components:
+                                comp_shard_size = comp.shape[0] // tp_size
+                                start_idx = tp_rank * comp_shard_size
+                                end_idx = start_idx + comp_shard_size
+                                sharded_components.append(comp[start_idx:end_idx])
+
+                            # Re-concatenate the sharded components
+                            value = torch.cat(sharded_components, dim=0)
+                            print(
+                                f"Sharded merged amax {key} for TP rank {tp_rank}: "
+                                f"{ckpt_shape} -> {value.shape} "
+                                f"(component sizes: {component_sizes} -> {[c.shape[0] for c in sharded_components]})"
+                            )
+                        else:
+                            # Check if this is a row-parallel layer (o_proj, down_proj)
+                            # Row-parallel layers need strided/interleaved sharding
+                            is_row_parallel = any(x in key for x in ["o_proj", "down_proj"])
+
+                            if is_row_parallel:
+                                # For row-parallel layers (o_proj, down_proj):
+                                # - Weight is sharded along INPUT dimension (columns)
+                                # - Amax is organized as [out_feat_0_blocks, out_feat_1_blocks, ...]
+                                # - Each rank needs HALF the blocks for EACH output feature
+                                #
+                                # Example for o_proj with shape [2048, 2048], block_size=16, TP=2:
+                                # - Full amax: [262144, 1] = [2048 out_feat * 128 blocks_per_out, 1]
+                                # - Rank 0 needs: blocks 0-63 for each output feature
+                                # - Rank 1 needs: blocks 64-127 for each output feature
+                                # - Sharded amax: [131072, 1] = [2048 * 64, 1]
+
+                                # Compute the number of blocks per output feature
+                                full_size = ckpt_shape[0]
+                                sharded_size = model_shape[0]
+                                # full_size = num_out_feat * blocks_per_out
+                                # sharded_size = num_out_feat * blocks_per_out / tp_size
+                                # So: num_out_feat = sharded_size * tp_size / (tp_size - 1 + tp_size)
+                                # Actually: full_size / sharded_size = tp_size
+                                # And: full_size = num_out * full_blocks_per_out
+                                #      sharded_size = num_out * sharded_blocks_per_out
+                                # So: full_blocks_per_out / sharded_blocks_per_out = tp_size
+                                #     sharded_blocks_per_out = full_blocks_per_out / tp_size
+
+                                # We need to find num_out_feat and blocks_per_out
+                                # Since full_size = num_out * blocks_per_out, we need one more constraint
+                                # The constraint is: blocks_per_out must be divisible by tp_size
+                                # Common values: blocks_per_out = 128 (hidden_dim=2048, block_size=16)
+
+                                # Find the best factorization
+                                # We know sharded_blocks_per_out = blocks_per_out / tp_size
+                                # Try common block counts: 128, 64, 256, 384, 512
+                                found_factorization = False
+                                for full_blocks_per_out in [128, 256, 384, 512, 64, 192, 320]:
+                                    if full_size % full_blocks_per_out == 0:
+                                        num_out_feat = full_size // full_blocks_per_out
+                                        if full_blocks_per_out % tp_size == 0:
+                                            sharded_blocks_per_out = full_blocks_per_out // tp_size
+                                            expected_sharded = num_out_feat * sharded_blocks_per_out
+                                            if expected_sharded == sharded_size:
+                                                found_factorization = True
+                                                break
+
+                                if not found_factorization:
+                                    print(
+                                        f"Warning: Could not find valid factorization for {key}. "
+                                        f"Falling back to contiguous sharding."
+                                    )
+                                    shard_size = model_shape[0]
+                                    start_idx = tp_rank * shard_size
+                                    end_idx = start_idx + shard_size
+                                    value = value[start_idx:end_idx]
+                                else:
+                                    # Reshape to [num_out_feat, blocks_per_out]
+                                    value_2d = value.view(num_out_feat, full_blocks_per_out)
+
+                                    # Select the blocks for this rank
+                                    start_block = tp_rank * sharded_blocks_per_out
+                                    end_block = start_block + sharded_blocks_per_out
+                                    value_sharded = value_2d[:, start_block:end_block]
+
+                                    # Flatten back to [num_out_feat * sharded_blocks_per_out, 1]
+                                    value = value_sharded.contiguous().view(-1, 1)
+
+                                    print(
+                                        f"Sharded row-parallel amax {key} for TP rank {tp_rank}: "
+                                        f"{ckpt_shape} -> {value.shape} "
+                                        f"(num_out={num_out_feat}, "
+                                        f"blocks {start_block}:{end_block} of {full_blocks_per_out})"
+                                    )
+                            else:
+                                # Column-parallel layers: simple contiguous sharding
+                                shard_size = model_shape[0]
+                                start_idx = tp_rank * shard_size
+                                end_idx = start_idx + shard_size
+                                value = value[start_idx:end_idx]
+                                print(
+                                    f"Sharded column-parallel amax {key} for TP rank {tp_rank}: "
+                                    f"{ckpt_shape} -> {value.shape}"
+                                )
+                    else:
+                        print(
+                            f"Warning: Shape mismatch for {key}: "
+                            f"checkpoint {ckpt_shape} vs model {model_shape}, "
+                            f"TP size={tp_size}. Skipping this key."
+                        )
+                        continue
+
                 current_state_dict[key] = value.to(current_state_dict[key].device)
 
         model.load_state_dict(current_state_dict)

@@ -67,6 +67,40 @@ from modelopt.torch.utils.memory_monitor import launch_memory_monitor
 from modelopt.torch.utils.speech_dataset_utils import get_speech_dataset_dataloader
 from modelopt.torch.utils.vlm_dataset_utils import get_vlm_dataset_dataloader
 
+# Patch to fix cnn_dailymail streaming issue (TAR extraction not supported in streaming mode)
+import datasets
+_original_load_dataset = datasets.load_dataset
+
+def _patched_load_dataset(*args, **kwargs):
+    path = kwargs.get('path') or (args[0] if args else None)
+    if path == 'cnn_dailymail' and kwargs.get('streaming', False):
+        print("[PATCH] Disabling streaming for cnn_dailymail dataset")
+        kwargs['streaming'] = False
+    return _original_load_dataset(*args, **kwargs)
+
+datasets.load_dataset = _patched_load_dataset
+
+# Register additional datasets in modelopt's SUPPORTED_DATASET_CONFIG
+from modelopt.torch.utils.dataset_utils import SUPPORTED_DATASET_CONFIG
+
+# Add nvidia/OpenScience dataset (scientific QA data)
+SUPPORTED_DATASET_CONFIG["nvidia/OpenScience"] = {
+    "config": {"path": "nvidia/OpenScience", "name": "OS-Q2.5-32B-4", "split": ["train"]},
+    "preprocess": lambda sample: "\n".join([sample["input"], sample["output"]]),
+}
+
+# Add openai/gsm8k dataset (math reasoning)
+SUPPORTED_DATASET_CONFIG["openai/gsm8k"] = {
+    "config": {"path": "openai/gsm8k", "name": "main", "split": ["train"]},
+    "preprocess": lambda sample: "\n".join([sample["question"], sample["answer"]]),
+}
+
+# Add codeparrot/apps dataset (code generation)
+SUPPORTED_DATASET_CONFIG["codeparrot/apps"] = {
+    "config": {"path": "codeparrot/apps", "name": "all", "split": ["train"]},
+    "preprocess": lambda sample: sample["question"],
+}
+
 RAND_SEED = 1234
 
 QUANT_CFG_CHOICES: dict[str, dict[str, Any]] = {
@@ -312,9 +346,10 @@ def load_model(args: argparse.Namespace):
         )
     else:
         if args.dataset is None:
-            args.dataset = ["cnn_dailymail", "nemotron-post-training-dataset-v2"]
+            args.dataset = ["nvidia/OpenScience", "openai/gsm8k", "codeparrot/apps", "cnn_dailymail"]
             warnings.warn(
-                "No dataset specified. Defaulting to cnn_dailymail and nemotron-post-training-dataset-v2."
+                "No dataset specified. Defaulting to nvidia/OpenScience (512), openai/gsm8k (256), "
+                "codeparrot/apps (256), and cnn_dailymail (256). Using training split for all datasets."
             )
         # Adjust calib_size to match dataset length by extending or truncating as needed
         args.calib_size = (args.calib_size + [args.calib_size[-1]] * len(args.dataset))[
@@ -438,8 +473,10 @@ def mono_quantize(
 
         # Check if we need backward pass for global hessian calibration
         algorithm_cfg = quant_cfg.get("algorithm", {})
+        # algorithm_cfg can be a string (e.g., "max") or a dict with method/hessian_type
         use_global_hessian = (
-            algorithm_cfg.get("method") == "local_hessian"
+            isinstance(algorithm_cfg, dict)
+            and algorithm_cfg.get("method") == "local_hessian"
             and algorithm_cfg.get("hessian_type") == "global"
         )
 
@@ -708,8 +745,14 @@ def quantize_main(
     if args.batch_size == 0:
         # Calibration/sparsification will actually take much more memory than regular inference
         # due to intermediate tensors for fake quantization. Setting sample_memory_usage_ratio
-        # to 2 to avoid OOM for AWQ/SmoothQuant fake quantization as it will take more memory than inference.
-        sample_memory_usage_ratio = 2 if "awq" in args.qformat or "sq" in args.qformat else 1.1
+        # to avoid OOM for AWQ/SmoothQuant/MSE fake quantization as it will take more memory than inference.
+        # MSE calibration is particularly memory-intensive as it creates many tensor copies for amax sweeping.
+        if "mse" in args.qformat:
+            sample_memory_usage_ratio = 4  # MSE sweeps over many amax candidates, needs more headroom
+        elif "awq" in args.qformat or "sq" in args.qformat:
+            sample_memory_usage_ratio = 2
+        else:
+            sample_memory_usage_ratio = 1.1
         # Whisper model expects mel-spectrogram input features of length 3000
         # Whisper model needs input of shape (batch_size, num_mel_bins, 3000)
         # As the encoder of Whisper doesn't have embedding layer, input dtype has to be float
@@ -851,13 +894,13 @@ def parse_args() -> argparse.Namespace:
             "This argument will be parsed and converted as a list of ints."
         ),
         type=str,
-        default="512",
+        default="512,256,256,256",
     )
     parser.add_argument(
         "--calib_seq",
         help="Maximum sequence length for calibration.",
         type=int,
-        default=512,
+        default=4096,
     )
     parser.add_argument("--export_path", default="exported_model")
     parser.add_argument(

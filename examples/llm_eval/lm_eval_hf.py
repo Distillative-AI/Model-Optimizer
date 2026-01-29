@@ -39,6 +39,7 @@
 import warnings
 
 from lm_eval import utils
+from transformers import AutoModelForCausalLM
 from lm_eval.__main__ import cli_evaluate, parse_eval_args, setup_parser
 from lm_eval.api.model import T
 from lm_eval.models.huggingface import HFLM
@@ -46,6 +47,19 @@ from quantization_utils import quantize_model
 
 import modelopt.torch.opt as mto
 from modelopt.torch.quantization.utils import is_quantized
+
+# Patch to fix cnn_dailymail streaming issue (TAR extraction not supported in streaming mode)
+import datasets
+_original_load_dataset = datasets.load_dataset
+
+def _patched_load_dataset(*args, **kwargs):
+    path = kwargs.get('path') or (args[0] if args else None)
+    if path == 'cnn_dailymail' and kwargs.get('streaming', False):
+        print("[PATCH] Disabling streaming for cnn_dailymail dataset")
+        kwargs['streaming'] = False
+    return _original_load_dataset(*args, **kwargs)
+
+datasets.load_dataset = _patched_load_dataset
 
 
 def create_from_arg_obj(cls: type[T], arg_dict: dict, additional_config: dict | None = None) -> T:
@@ -66,6 +80,41 @@ def create_from_arg_obj(cls: type[T], arg_dict: dict, additional_config: dict | 
     # Enable automatic save/load of modelopt state huggingface checkpointing
     mto.enable_huggingface_checkpointing()
 
+    # Pre-load model with device_map="auto" to ensure multi-GPU distribution
+    # HFLM ignores device_map, so we must load the model ourselves
+    pretrained_path = arg_dict.get("pretrained")
+    trust_remote_code = arg_dict.get("trust_remote_code", False)
+    
+    # Check if we should use device_map for distribution
+    use_device_map = arg_dict.pop("device_map", None) == "auto"
+    
+    if use_device_map and pretrained_path:
+        print(f"[INFO] Pre-loading model with device_map='auto' for multi-GPU distribution...")
+        # Load model with proper device distribution
+        preloaded_model = AutoModelForCausalLM.from_pretrained(
+            pretrained_path,
+            device_map="auto",
+            trust_remote_code=trust_remote_code,
+            torch_dtype="auto",
+        )
+        
+        # Check distribution
+        hf_device_map = getattr(preloaded_model, 'hf_device_map', None)
+        if hf_device_map is None:
+            hf_device_map = getattr(getattr(preloaded_model, 'model', None), 'hf_device_map', None)
+        
+        if hf_device_map:
+            devices = set(hf_device_map.values())
+            print(f"[INFO] Model distributed across {len(devices)} devices: {devices}")
+        else:
+            print(f"[WARNING] device_map='auto' didn't distribute model")
+        
+        # Pass pre-loaded model to HFLM instead of path
+        arg_dict["pretrained"] = preloaded_model
+        # Don't let HFLM try to move the model
+        if "device" in arg_dict:
+            del arg_dict["device"]
+    
     model_obj = cls(**arg_dict, **additional_config)
     model_obj.tokenizer.padding_side = "left"
     if is_quantized(model_obj.model):

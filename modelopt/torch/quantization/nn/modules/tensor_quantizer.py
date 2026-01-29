@@ -755,7 +755,7 @@ class TensorQuantizer(nn.Module):
                 inputs,
                 amax / 6.0,
                 None,  # scale_fp8_quant_amax
-                False,  # skip_scale_quant
+                True,  # skip_scale_quant
                 inputs.dtype,  # out_dtype
                 self._pass_through_bwd,  # pass_through_bwd
             )
