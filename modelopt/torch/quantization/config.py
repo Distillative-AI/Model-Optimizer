@@ -370,21 +370,21 @@ FP8_AFFINE_KV_CFG = {
 
 NVFP4_DEFAULT_CFG = {
     "quant_cfg": {
-        "*weight_quantizer": {
-            "num_bits": (2, 1),
-            "block_sizes": {-1: 16, "type": "dynamic", "scale_bits": (4, 3)},
-            "axis": None,
-            "enable": True,
-        },
+        # "*weight_quantizer": {
+        #     "num_bits": (2, 1),
+        #     "block_sizes": {-1: 16, "type": "dynamic", "scale_bits": (4, 3)},
+        #     "axis": None,
+        #     "enable": True,
+        # },
         "*input_quantizer": {
             "num_bits": (2, 1),
             "block_sizes": {-1: 16, "type": "dynamic", "scale_bits": (4, 3)},
             "axis": None,
             "enable": True,
         },
-        # "*input_quantizer": {
-        #     "enable": False,
-        # },
+        "*weight_quantizer": {
+            "enable": False,
+        },
         **_default_disabled_quantizer_cfg,
     },
     "algorithm": "max",
@@ -474,8 +474,14 @@ NVFP4_GLOBAL_HESSIAN_CFG = {
             "axis": None,
             "enable": True,
         },
-        "*input_quantizer": {
-            "enable": False,
+        # "*input_quantizer": {
+        #     "enable": False,
+        # },
+         "*input_quantizer": {
+            "num_bits": (2, 1),
+            "block_sizes": {-1: 16, "type": "dynamic", "scale_bits": (4, 3)},
+            "axis": None,
+            "enable": True,
         },
         **_default_disabled_quantizer_cfg,
     },

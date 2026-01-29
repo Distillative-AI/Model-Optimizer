@@ -557,11 +557,6 @@ def local_hessian_calibrate(
                     helper.accumulate_global_hessian(helper._cached_input, grad_out.detach())
                 helper._cached_input = None
 
-    # First, run max_calibrate on the whole model to get initial amax for all quantizers
-    # This calibrates both weight_quantizer and input_quantizer with max calibration
-    print_rank_0("local_hessian: Running max calibration for all quantizers...")
-    max_calibrate(model, forward_loop, distributed_sync)
-
     # Setup helpers for all quantized linear modules
     name_to_module = dict(model.named_modules())
     weight_quantizers_info = []
@@ -578,18 +573,44 @@ def local_hessian_calibrate(
                     handle = module.register_full_backward_hook(backward_hook)
                     module.local_hessian._backward_hook_handle = handle
 
-    # Cache activations by running forward loop for Hessian collection
-    LocalHessianHelper.cache_mode = True
-    hessian_type_str = "global" if use_global_hessian else "local"
-    print_rank_0(f"local_hessian: Caching activations and computing {hessian_type_str} Hessian...")
-
+    # Run max_calibrate to get initial amax for all quantizers
+    # For local hessian: can use forward_loop directly (no gradients needed)
+    # For global hessian: need to handle separately since max_calibrate uses @torch.no_grad()
+    #                     but global hessian's forward_loop needs to call loss.backward()
+    print_rank_0("local_hessian: Running max calibration for all quantizers...")
     if use_global_hessian:
-        # Global hessian requires backward pass - need gradients enabled
-        # The forward_loop should compute loss and call backward
+        # For global hessian: first calibrate weights only, then run forward_loop with gradients
+        # to calibrate input quantizers AND collect Hessian in one pass
+        max_calibrate(model, forward_loop=None, distributed_sync=distributed_sync)
+
+        # Enable stats collection for input quantizers
+        for name, module in weight_quantizers_info:
+            input_quantizer = getattr(module, "input_quantizer", None)
+            if input_quantizer is not None and input_quantizer.is_enabled:
+                enable_stats_collection(input_quantizer)
+
+        # Clear GPU cache before memory-intensive forward+backward pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Run forward_loop with gradients enabled to collect Hessian AND input quantizer stats
+        LocalHessianHelper.cache_mode = True
+        print_rank_0("local_hessian: Caching activations and computing global Hessian...")
         with torch.enable_grad():
             forward_loop(model)
+
+        # Finish input quantizer calibration
+        for name, module in weight_quantizers_info:
+            input_quantizer = getattr(module, "input_quantizer", None)
+            if input_quantizer is not None and input_quantizer.is_enabled:
+                finish_stats_collection(input_quantizer)
     else:
-        # Local hessian only needs forward pass
+        # For local hessian: max_calibrate can run the forward_loop (no gradients needed)
+        max_calibrate(model, forward_loop, distributed_sync)
+
+        # Cache activations by running forward loop for Hessian collection
+        LocalHessianHelper.cache_mode = True
+        print_rank_0("local_hessian: Caching activations and computing local Hessian...")
         with torch.no_grad():
             forward_loop(model)
 
@@ -682,6 +703,7 @@ def local_hessian_calibrate(
     # max_calibrate at the beginning of this function
 
     # Replace calibrators with MseCalibrator using Hessian error function
+    hessian_type_str = "global" if use_global_hessian else "local"
     print_rank_0(f"local_hessian: Running MSE calibration with {hessian_type_str} Hessian loss...")
     for name, module in weight_quantizers_info:
         weight_quantizer = module.weight_quantizer
