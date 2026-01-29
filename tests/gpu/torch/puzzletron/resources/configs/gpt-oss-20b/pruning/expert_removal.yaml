@@ -17,3 +17,4 @@ num_experts_to_keep_list: [24, 16, 8]
 mlp_init_mode: "ExpertRemoval"
 mlp_init_config_yaml:
   expert_scores_key: "expert_ranks_mse"
+  layer_prefix_template: "model.layers.{layer_idx}."
