@@ -157,6 +157,9 @@ def _test_puzzletron_multiprocess_job(
             )
             assert solution_0_ckpt_config_path.exists()
             assert (solution_dir / "solutions.json").exists()
+
+            # Validate lm_loss
+            _assert_lm_loss(puzzle_dir, hf_config_name)
         else:
             # assertions for the score_pruning_activations step 1 (FFN pruning)
             _assert_score_pruning_activations(puzzle_dir, hf_config_name)
@@ -227,7 +230,9 @@ EXPECTED_LM_LOSS = {
     "nemotron-nano-12b-v2": 4.79390811920166,
     "mistral-small-24b-instruct-2501": 4.709150314331055,
     "qwen3-8b": 4.733874320983887,
-    # Note: nemotron-3-nano-30b-a3b-base-bf16 and gpt-oss-20b use MoE expert pruning with different MIP path
+    "gpt-oss-20b": 4.689250946044922,
+    "nemotron-3-nano-30b-a3b-base-bf16": 4.741103172302246,
+    "qwen3-vl-30b-a3b-instruct": 4.65625,
 }
 
 
@@ -273,14 +278,8 @@ def _assert_score_pruning_activations(puzzle_dir: Path, hf_config_name: str):
         print("===")
 
 
-def _assert_mip_solutions(puzzle_dir: Path, hf_config_name: str):
-    """Assertions for the mip_and_realize_models step."""
-    mip_dir = puzzle_dir / "mip/puzzle_solutions/target_memory_780000MiB"
-
-    assert (mip_dir / "solutions.json").exists()
-    assert (mip_dir / "solutions--checkpoints/solution_0/config.json").exists()
-
-    # Check lm_loss exists and is valid
+def _assert_lm_loss(puzzle_dir: Path, hf_config_name: str):
+    """Validate lm_loss for a model solution."""
     solution_0_path = (
         puzzle_dir / "single_sequence_replacement_solutions--validation/solution_0.json"
     )
@@ -288,7 +287,7 @@ def _assert_mip_solutions(puzzle_dir: Path, hf_config_name: str):
         validation = json.load(f)
 
     actual_lm_loss = validation["lm_loss"]["avg"]
-    expected_lm_loss = EXPECTED_LM_LOSS[hf_config_name]
+    expected_lm_loss = EXPECTED_LM_LOSS.get(hf_config_name)
     if expected_lm_loss is not None:
         assert abs(actual_lm_loss - expected_lm_loss) < 0.01, (
             f"lm_loss mismatch: expected {expected_lm_loss}, got {actual_lm_loss}"
@@ -298,3 +297,14 @@ def _assert_mip_solutions(puzzle_dir: Path, hf_config_name: str):
         print(f"\n=== LM_LOSS for {hf_config_name} ===")
         print(f'"{hf_config_name}": {actual_lm_loss},')
         print("===")
+
+
+def _assert_mip_solutions(puzzle_dir: Path, hf_config_name: str):
+    """Assertions for the mip_and_realize_models step."""
+    mip_dir = puzzle_dir / "mip/puzzle_solutions/target_memory_780000MiB"
+
+    assert (mip_dir / "solutions.json").exists()
+    assert (mip_dir / "solutions--checkpoints/solution_0/config.json").exists()
+
+    # Validate lm_loss
+    _assert_lm_loss(puzzle_dir, hf_config_name)
