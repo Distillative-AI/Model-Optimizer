@@ -89,7 +89,7 @@ def _gpt_model_provider(tp_size: int, hidden_size=256, vocab_size=64):
         tensor_model_parallel_size=tp_size,
         num_layers=2,
         ffn_hidden_size=None,
-        num_attention_heads=4,
+        num_attention_heads=tp_size,
         activation_func="squared_relu",
         transformer_impl="transformer_engine",
         hidden_size=hidden_size,

@@ -146,22 +146,36 @@ class _LoRAMegatronColumnParallelLinear(_MegatronParallelLoRABase):
             adapter_name: Name for the new adapter
             rank: Rank of the LoRA decomposition
         """
+        input_size = getattr(self, "input_size", None) or self.in_features
+        output_size = getattr(self, "output_size", None) or self.out_features
+
         lora_a = nn.Linear(
-            in_features=self.input_size,
+            in_features=input_size,
             out_features=attr_config.rank,
             bias=False,
         )
         with torch.no_grad():
             attr_config.lora_a_init(lora_a.weight)
 
-        lora_b = ColumnParallelLinear(
-            attr_config.rank,
-            self.output_size,
-            config=self.config,
-            bias=False,
-            gather_output=False,
-            init_method=attr_config.lora_b_init,
-        )
+        if HAS_TE and isinstance(self, TEColumnParallelLinear):
+            lora_b = TEColumnParallelLinear(
+                attr_config.rank,
+                output_size,
+                config=self.config,
+                bias=False,
+                gather_output=False,
+                is_expert=False,  # TODO (Jingyu): Hard coded to False
+                init_method=attr_config.lora_b_init,
+            )
+        else:
+            lora_b = ColumnParallelLinear(
+                attr_config.rank,
+                output_size,
+                config=self.config,
+                bias=False,
+                gather_output=False,
+                init_method=attr_config.lora_b_init,
+            )
 
         self._register_adapter_with_device(
             adapter_name, lora_a, lora_b, attr_config.rank, attr_config.scale, attr_config.enable
@@ -181,7 +195,6 @@ class _LoRAMegatronColumnParallelLinear(_MegatronParallelLoRABase):
                 lora_b_name = f"lora_b_{adapter_name}"
                 lora_b = self._lora_adapters[adapter_name]["lora_b"]
 
-                assert isinstance(lora_b, ColumnParallelLinear)
                 lora_b_sharded = lora_b.sharded_state_dict(
                     prefix=f"{prefix}{lora_b_name}.",
                     sharded_offsets=sharded_offsets,
@@ -211,19 +224,34 @@ class _LoRAMegatronRowParallelLinear(_MegatronParallelLoRABase):
             adapter_name: Name for the new adapter
             rank: Rank of the LoRA decomposition
         """
-        lora_a = RowParallelLinear(
-            self.input_size,
-            attr_config.rank,
-            config=self.config,
-            input_is_parallel=True,
-            skip_bias_add=True,
-            bias=False,
-            init_method=attr_config.lora_a_init,
-        )
+        input_size = getattr(self, "input_size", None) or self.in_features
+        output_size = getattr(self, "output_size", None) or self.out_features
+
+        if HAS_TE and isinstance(self, TERowParallelLinear):
+            lora_a = TERowParallelLinear(
+                input_size,
+                attr_config.rank,
+                config=self.config,
+                input_is_parallel=True,
+                skip_bias_add=True,
+                bias=False,
+                is_expert=False,  # TODO (Jingyu): Hard coded to False
+                init_method=attr_config.lora_a_init,
+            )
+        else:
+            lora_a = RowParallelLinear(
+                input_size,
+                attr_config.rank,
+                config=self.config,
+                input_is_parallel=True,
+                skip_bias_add=True,
+                bias=False,
+                init_method=attr_config.lora_a_init,
+            )
 
         lora_b = nn.Linear(
             in_features=attr_config.rank,
-            out_features=self.output_size,
+            out_features=output_size,
             bias=False,
         )
         with torch.no_grad():
@@ -247,7 +275,6 @@ class _LoRAMegatronRowParallelLinear(_MegatronParallelLoRABase):
                 lora_a_name = f"lora_a_{adapter_name}"
                 lora_a = self._lora_adapters[adapter_name]["lora_a"]
 
-                assert isinstance(lora_a, RowParallelLinear)
                 lora_a_sharded = lora_a.sharded_state_dict(
                     prefix=f"{prefix}{lora_a_name}.",
                     sharded_offsets=sharded_offsets,
@@ -259,14 +286,12 @@ class _LoRAMegatronRowParallelLinear(_MegatronParallelLoRABase):
 
 
 if HAS_TE:
-
-    @LoRAModuleRegistry.register({TEColumnParallelLinear: "te_mcore_ColumnParallelLinear"})
-    class _LoRATEMCoreColumnParallelLinear(_LoRAMegatronColumnParallelLinear):
-        pass
-
-    @LoRAModuleRegistry.register({TERowParallelLinear: "te_mcore_RowParallelLinear"})
-    class _LoRATEMCoreRowParallelLinear(_LoRAMegatronRowParallelLinear):
-        pass
+    LoRAModuleRegistry.register({TEColumnParallelLinear: "te_mcore_ColumnParallelLinear"})(
+        _LoRAMegatronColumnParallelLinear
+    )
+    LoRAModuleRegistry.register({TERowParallelLinear: "te_mcore_RowParallelLinear"})(
+        _LoRAMegatronRowParallelLinear
+    )
 
 
 # Register quantized versions if available
@@ -279,9 +304,9 @@ LoRAModuleRegistry.register({QuantRowParallelLinear: "quant_megatron_RowParallel
 if HAS_TE:
     LoRAModuleRegistry.register(
         {QuantTEColumnParallelLinear: "quant_te_mcore_ColumnParallelLinear"}
-    )(_LoRATEMCoreColumnParallelLinear)
+    )(_LoRAMegatronColumnParallelLinear)
     LoRAModuleRegistry.register({QuantTERowParallelLinear: "quant_te_mcore_RowParallelLinear"})(
-        _LoRATEMCoreRowParallelLinear
+        _LoRAMegatronRowParallelLinear
     )
 
 
@@ -309,35 +334,9 @@ class _QuantLoRAMegatronRowParallelLinear(_LoRAMegatronRowParallelLinear, QuantR
         QuantRowParallelLinear._setup(self)
 
 
-if HAS_TE:
-
-    class _QuantLoRATEMCoreColumnParallelLinear(
-        _LoRATEMCoreColumnParallelLinear, QuantTEColumnParallelLinear
-    ):
-        """Quantized LoRA TE ColumnParallelLinear combining LoRA and quantization."""
-
-        def _setup(self):
-            QuantTEColumnParallelLinear._setup(self)
-
-    class _QuantLoRATEMCoreRowParallelLinear(
-        _LoRATEMCoreRowParallelLinear, QuantTERowParallelLinear
-    ):
-        """Quantized LoRA TE RowParallelLinear combining LoRA and quantization."""
-
-        def _setup(self):
-            QuantTERowParallelLinear._setup(self)
-
-
 QuantModuleRegistry.register(
     {_LoRAMegatronColumnParallelLinear: "lora_megatron_ColumnParallelLinear"}
 )(_QuantLoRAMegatronColumnParallelLinear)
 QuantModuleRegistry.register({_LoRAMegatronRowParallelLinear: "lora_megatron_RowParallelLinear"})(
     _QuantLoRAMegatronRowParallelLinear
 )
-if HAS_TE:
-    QuantModuleRegistry.register(
-        {_LoRATEMCoreColumnParallelLinear: "lora_te_mcore_ColumnParallelLinear"}
-    )(_QuantLoRATEMCoreColumnParallelLinear)
-    QuantModuleRegistry.register(
-        {_LoRATEMCoreRowParallelLinear: "lora_te_mcore_RowParallelLinear"}
-    )(_QuantLoRATEMCoreRowParallelLinear)
