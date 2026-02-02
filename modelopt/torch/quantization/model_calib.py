@@ -1405,10 +1405,12 @@ class LayerActivationGettr:
 
         bind_forward_method(self.model, _early_stop_forward, "_original_forward")
         self._patch_and_initialize_layer(layer, stop_after_collection=True)
-        forward_loop(self.model)
-        inputs = layer.inputs.copy()
-        self._unpatch_and_cleanup_layer(layer)
-        unpatch_forward_method(self.model, "_original_forward")
+        try:
+            forward_loop(self.model)
+            inputs = layer.inputs.copy()
+        finally:
+            self._unpatch_and_cleanup_layer(layer)
+            unpatch_forward_method(self.model, "_original_forward")
         return inputs
 
     def get_output_activations(self, layer: torch.nn.Module, inputs: list) -> list:
@@ -1425,10 +1427,12 @@ class LayerActivationGettr:
             List of outputs from the layer - one per batch.
         """
         self._patch_and_initialize_layer(layer, stop_after_collection=False)
-        for args, kwargs in inputs:
-            layer(*args, **kwargs)
-        outputs = layer.outputs.copy()
-        self._unpatch_and_cleanup_layer(layer)
+        try:
+            for args, kwargs in inputs:
+                layer(*args, **kwargs)
+            outputs = layer.outputs.copy()
+        finally:
+            self._unpatch_and_cleanup_layer(layer)
         return outputs
 
 
