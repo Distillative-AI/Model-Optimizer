@@ -197,6 +197,36 @@ block_13:  attention  no_op   ffn  intermediate_11520
 block_14:  attention  no_op   ffn  intermediate_3072
 ```
 
+### MIP Sweep Mode
+
+The **MIP sweep mode** lets you explore multiple memory compression rates in a single run and compare the accuracy-memory trade-offs.
+
+#### Quick Start
+
+1. Enable sweep in your config YAML (e.g., `llama-3_1-8B_pruneffn_memory.yaml`):
+
+   ```yaml
+   mip:
+     sweep:
+       enabled: true
+       memory_compression_rates: [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+       output_csv: ${puzzle_dir}/mip_sweep_results.csv
+   ```
+
+2. Run the sweep:
+
+   ```bash
+   torchrun --nproc_per_node 2 examples/puzzletron/main.py --config examples/puzzletron/configs/llama-3_1-8B_pruneffn_memory/llama-3_1-8B_pruneffn_memory.yaml --mip-only 2>&1 | tee ./log.txt | grep "Puzzletron Progress"
+   ```
+
+3. View results: The CSV file contains compression rates, memory usage, and accuracy metrics for each configuration.
+
+#### Example Results
+
+![MIP Sweep Results](mip_sweep_example.png)
+
+The plot shows how token accuracy changes with different compression rates. Higher compression (0.5 = 50% of original memory) reduces accuracy, while lower compression maintains accuracy closer to the teacher model.
+
 ## Evaluation
 
 Once the model is ready, you can evaluate it using [Language Model Evaluation Harness](https://pypi.org/project/lm-eval/). For example, run the following to evaluate the model on [Massive Multitask Language Understanding](https://huggingface.co/datasets/cais/mmlu) benchmark.
