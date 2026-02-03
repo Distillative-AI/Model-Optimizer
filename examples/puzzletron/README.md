@@ -223,7 +223,7 @@ The **MIP sweep mode** lets you explore multiple memory compression rates in a s
 
 #### Example Results
 
-![MIP Sweep Results](mip_sweep_example.png)
+<img src="mip_sweep_example.png" alt="MIP Sweep Results" width="600">
 
 The plot shows how token accuracy changes with different compression rates. Higher compression (0.5 = 50% of original memory) reduces accuracy, while lower compression maintains accuracy closer to the teacher model.
 
