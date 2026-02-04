@@ -14,7 +14,9 @@
 # limitations under the License.
 
 import argparse
+import io
 import random
+import sys
 import time
 import warnings
 from typing import Any
@@ -802,7 +804,20 @@ def post_quantize(
     """
 
     if args.verbose:
-        mtq.print_quant_summary(full_model)
+        if args.quant_summary_path:
+            # Capture the summary output to a file
+            old_stdout = sys.stdout
+            sys.stdout = buffer = io.StringIO()
+            try:
+                mtq.print_quant_summary(full_model)
+            finally:
+                sys.stdout = old_stdout
+            summary = buffer.getvalue()
+            with open(args.quant_summary_path, "w") as f:
+                f.write(summary)
+            print(f"Quantization summary saved to {args.quant_summary_path}")
+        else:
+            mtq.print_quant_summary(full_model)
 
     # Run some samples
     torch.cuda.empty_cache()
@@ -1194,6 +1209,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Path to checkpoint file for saving/restoring auto_quantize search state "
             "(sensitivity scores, costs, etc.). Only used when auto_quantize_bits is specified."
+        ),
+    )
+    parser.add_argument(
+        "--quant_summary_path",
+        type=str,
+        default=None,
+        help=(
+            "Path to save the quantization summary. If not specified, summary is printed to stdout. "
+            "Requires --verbose to be enabled (default: True)."
         ),
     )
 
