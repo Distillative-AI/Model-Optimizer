@@ -297,9 +297,9 @@ def mse_calibrate(
                     weight_quantizers.append((parent_module, weight_name, weight_quantizer))
         seen_modules.add(parent_module)
 
-    # Step 3: Calibrate weight quantizers once with MSE calibration
-    # This ensures weights are only calibrated once, not during every forward pass
-    for parent_module, weight_name, weight_quantizer in weight_quantizers:
+    # Step 3: Calibrate weight quantizers ONE AT A TIME with immediate amax computation
+    # This prevents massive memory accumulation seen in large models
+    for idx, (parent_module, weight_name, weight_quantizer) in enumerate(weight_quantizers):
         # Enable calibration mode for the weight quantizer
         weight_quantizer.disable_quant()
         weight_quantizer.enable_calib()
@@ -308,25 +308,52 @@ def mse_calibrate(
             weight = getattr(parent_module, weight_name)
             weight_quantizer(weight)
 
+        # IMMEDIATELY compute amax and reset calibrator to free memory
+        cal = getattr(weight_quantizer, "_calibrator", None)
+        if cal is not None and cal.compute_amax() is not None:
+            weight_quantizer.load_calib_amax()
+
+        weight_quantizer.enable_quant()
+        weight_quantizer.disable_calib()
+
+        # Synchronize ALL CUDA devices before resetting to ensure all async operations complete
+        # This is critical for multi-GPU setups where tensors may be on different devices
+        if torch.cuda.is_available():
+            for dev_id in range(torch.cuda.device_count()):
+                torch.cuda.synchronize(torch.device(f"cuda:{dev_id}"))
+
+        if cal is not None and hasattr(cal, "reset"):
+            cal.reset()
+
+        if (idx + 1) % 10 == 0 and torch.cuda.is_available():
+            for dev_id in range(torch.cuda.device_count()):
+                torch.cuda.synchronize(torch.device(f"cuda:{dev_id}"))
+            torch.cuda.empty_cache()
+
+    if torch.cuda.is_available():
+        for dev_id in range(torch.cuda.device_count()):
+            torch.cuda.synchronize(torch.device(f"cuda:{dev_id}"))
+        torch.cuda.empty_cache()
+
     # Step 4: Disable weight quantizers during forward loop
+    # This prevents enable_stats_collection from re-enabling calibration on them
     for _, _, weight_quantizer in weight_quantizers:
         weight_quantizer.disable()
 
     # Step 5: Collect data with MSE calibrators for activation quantizers only
+    # (Weight quantizers are disabled, so enable_stats_collection won't affect them)
     enable_stats_collection(model)
-    if forward_loop is None:
-        # If no forward loop, nothing else to do since weights are already calibrated
-        pass
-    else:
+    if forward_loop is not None:
         # Run forward loop - only activation quantizers will collect data
         forward_loop(model)
 
     # Step 6: Re-enable weight quantizers before finalizing calibration
-    # This ensures finish_stats_collection processes them correctly
     for _, _, weight_quantizer in weight_quantizers:
         weight_quantizer.enable()
 
-    # Step 7: Compute optimal amax and load it for all quantizers (weights + activations)
+    # Step 7: Compute optimal amax for activation quantizers only
+    # (Weight quantizers already have their amax loaded and calibrators reset, so
+    # finish_stats_collection will skip them since compute_amax() returns None)
     finish_stats_collection(model, method="mse")
 
     # Step 8: Free GPU memory by clearing calibrator data
@@ -759,31 +786,42 @@ def local_hessian_calibrate(
 
     # Free cached memory before heavy calibration
     torch.cuda.empty_cache()
-    # Calibrate weights with local Hessian MSE
-    for name, module in weight_quantizers_info:
-        weight_quantizer = module.weight_quantizer
-        if weight_quantizer._calibrator is None:
-            continue
 
+    # Process weights ONE AT A TIME with immediate amax computation and cleanup
+    weight_list = [(name, module) for name, module in weight_quantizers_info
+                   if module.weight_quantizer._calibrator is not None]
+
+    for idx, (name, module) in enumerate(weight_list):
+        weight_quantizer = module.weight_quantizer
+        cal = weight_quantizer._calibrator
+
+        # Step 1: Calibrate this weight
         weight_quantizer.disable_quant()
         weight_quantizer.enable_calib()
-
         with enable_weight_access_and_writeback(module, model, name_to_module):
             weight = module.weight
             weight_quantizer(weight)
 
-    # Compute optimal amax and load it
-    for name, module in weight_quantizers_info:
-        weight_quantizer = module.weight_quantizer
-        if weight_quantizer._calibrator is None:
-            continue
-
-        cal = weight_quantizer._calibrator
+        # Step 2: IMMEDIATELY compute amax (before calibration data grows)
         if cal.compute_amax() is not None:
             weight_quantizer.load_calib_amax()
 
         weight_quantizer.enable_quant()
         weight_quantizer.disable_calib()
+
+        # Step 3: Sync all devices and reset calibrator for next weight
+        for dev_id in range(torch.cuda.device_count()):
+            torch.cuda.synchronize(torch.device(f"cuda:{dev_id}"))
+
+        if hasattr(cal, 'reset'):
+            cal.reset()
+
+        if (idx + 1) % 10 == 0:
+            torch.cuda.empty_cache()
+
+    for dev_id in range(torch.cuda.device_count()):
+        torch.cuda.synchronize(torch.device(f"cuda:{dev_id}"))
+    torch.cuda.empty_cache()
 
     # Cleanup and free memory
     LocalHessianHelper.cache_mode = False
