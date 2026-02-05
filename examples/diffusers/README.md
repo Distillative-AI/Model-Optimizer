@@ -109,7 +109,7 @@ python quantize.py \
 
 ```sh
 python quantize.py \
-    --model {flux-dev|flux-schnell|sdxl-1.0|sdxl-turbo|sd3-medium|sd3.5-medium|ltx-video-dev|ltx-2|wan2.2-t2v-14b|wan2.2-t2v-5b} \
+    --model {flux-dev|flux-schnell|sdxl-1.0|sdxl-turbo|sd3-medium|sd3.5-medium|ltx-video-dev|wan2.2-t2v-14b|wan2.2-t2v-5b} \
     --model-dtype {Half|BFloat16} \
     --format {fp8|fp4} --batch-size 2 --calib-size {128|256} --quantize-mha \
     --n-steps 20 --quantized-torch-ckpt-save-path ./{MODEL_NAME}.pt --collect-method default \
