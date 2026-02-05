@@ -31,6 +31,7 @@ from example_utils import (
     get_tokenizer,
     is_enc_dec,
     is_nemotron_vl,
+    load_mtp_weights_if_needed,
     run_nemotron_vl_preview,
 )
 from torch.utils.data import DataLoader
@@ -85,6 +86,7 @@ QUANT_CFG_CHOICES: dict[str, dict[str, Any]] = {
     "w4a8_mxfp4_fp8": mtq.W4A8_MXFP4_FP8_CFG,
     "nvfp4_mlp_only": mtq.NVFP4_MLP_ONLY_CFG,
     "nvfp4_svdquant": mtq.NVFP4_SVDQUANT_DEFAULT_CFG,
+    "mxfp8": mtq.MXFP8_DEFAULT_CFG,
 }
 
 KV_QUANT_CFG_CHOICES = {
@@ -248,6 +250,7 @@ def auto_quantize(
             "fp8_pb_wo",
             "w4a8_mxfp4_fp8",
             "nvfp4_mlp_only",
+            "mxfp8",
         ]
         for args.qformat in qformat_list
     ), "One or more quantization formats provided are not supported for unified checkpoint export"
@@ -345,6 +348,12 @@ def load_model(args: argparse.Namespace):
                 **model_kwargs,
             )
         calibration_only = True
+
+        # Load any missing weights from non-standard safetensors (handled in get_model for non-low-memory mode)
+        # Store the MTP layer prefixes on the model for later exclusion from quantization
+        mtp_layer_prefixes = load_mtp_weights_if_needed(full_model, args.pyt_ckpt_path)
+        if mtp_layer_prefixes:
+            full_model._mtp_layer_prefixes = mtp_layer_prefixes
 
     model_type = get_model_type(full_model)
 
@@ -862,6 +871,7 @@ def quantize_main(
                 "fp8_pb_wo",
                 "w4a8_mxfp4_fp8",
                 "nvfp4_mlp_only",
+                "mxfp8",
             ]
             or args.kv_cache_qformat in KV_QUANT_CFG_CHOICES
         ), f"Plain quantization format {args.qformat} not supported for HF export path"
@@ -874,6 +884,19 @@ def quantize_main(
             QUANT_CFG_CHOICES,
             KV_QUANT_CFG_CHOICES,
         )
+
+        # Exclude MTP layers from quantization if detected (e.g., GLM-4.7's layer 92)
+        # These layers are typically speculative decoding layers that should be exported as-is
+        mtp_layer_prefixes = getattr(full_model, "_mtp_layer_prefixes", None)
+        if mtp_layer_prefixes:
+            import copy
+
+            quant_cfg = copy.deepcopy(quant_cfg)
+            for prefix in mtp_layer_prefixes:
+                # Add exclusion pattern for this MTP layer (e.g., "*layers.92*")
+                pattern = f"*{prefix.split('.')[-2]}.{prefix.split('.')[-1]}*"
+                quant_cfg["quant_cfg"][pattern] = {"enable": False}
+                print(f"Excluding MTP layer from quantization: {pattern}")
 
         if args.qformat in QUANT_CFG_CHOICES:
             mono_quantize(

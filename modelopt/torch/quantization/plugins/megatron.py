@@ -24,7 +24,6 @@ import megatron.core.parallel_state as mcore_parallel
 import megatron.core.tensor_parallel.layers as megatron_parallel
 import megatron.core.transformer.mlp as megatron_mlp
 import megatron.core.transformer.moe.experts as megatron_moe
-import megatron.core.transformer.moe.moe_layer as megatron_moe_layer
 import torch
 from megatron.core.parallel_state import get_data_parallel_group
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
@@ -52,6 +51,7 @@ try:
         TEColumnParallelLinear,
         TEDotProductAttention,
         TELayerNormColumnParallelLinear,
+        TELinear,
         TERowParallelGroupedLinear,
         TERowParallelLinear,
     )
@@ -574,12 +574,15 @@ class _MegatronSequentialMLP(DynamicModule):
             expert.linear_fc1.parallel_state = self.parallel_state
             expert.linear_fc2.parallel_state = self.parallel_state
 
-    def sync_moe_local_experts_amax(self):
+    def layer_sync_moe_local_experts_amax(self):
         """Sync amax across local experts in a SequentialMLP.
 
-        amax across EP and ETP (for RowParallel) are synchronized as part of model_calib.max_calibrate().
-        This function is called to synchronize the amax values across local experts s.t. all localexperts will
-        share the same amax.
+        Synchronize the amax values across local experts in a lyaer such that all local experts will
+        share the same amax. This function operates on a single rank and does not require distributed sync.
+
+        Distributed amax sync across EP and ETP (for RowParallel) happens in model_calib.max_calibrate().
+        This function should be called before the distributed sync to ensure the amax values
+        are synchronized across the layer first.
         """
         # Collect amax from all local experts
         amax_dict = {}
@@ -624,6 +627,10 @@ if HAS_TE:
 
     @QuantModuleRegistry.register({TEColumnParallelLinear: "te_mcore_ColumnParallelLinear"})
     class _QuantTEMCoreColumnParallelLinear(_QuantTELinear, _MegatronColumnParallelLinear):
+        pass
+
+    @QuantModuleRegistry.register({TELinear: "te_mcore_Linear"})
+    class _QuantTEMCoreLinear(_QuantTELinear):
         pass
 
     @QuantModuleRegistry.register(
@@ -735,29 +742,3 @@ if HAS_TE:
             # Affine KVCache Quant bias vector.
             state_dict = self.state_dict(prefix="", keep_vars=True)
             return make_sharded_tensors_for_checkpoint(state_dict, prefix, {}, sharded_offsets)
-
-
-@QuantModuleRegistry.register({megatron_moe_layer.MoELayer: "megatron_moe_MoELayer"})
-class _QuantMoELayer(QuantModule):
-    """Module to support special handling of token dispatching during calibration.
-
-    During calibration, we forward all tokens to all experts so that all experts see sufficient tokens to calibrate.
-    However, even in calibration mode, the actual top_k routing is used to calculate the actual outputs this instance
-    returns.
-
-    If calibration is not enabled, this module behaves as a normal MoELayer.
-    """
-
-    def _setup(self):
-        pass
-
-    def forward(self, hidden_states):
-        if any(getattr(m, "_if_calib", False) for m in self.experts.modules()):
-            if self.config.moe_router_num_groups is None:
-                original_top_k = self.router.topk
-                self.router.topk = self.router.num_experts
-                super().forward(hidden_states)
-                self.router.topk = original_top_k
-            else:
-                super().forward(hidden_states)
-        return super().forward(hidden_states)

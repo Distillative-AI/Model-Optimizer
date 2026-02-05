@@ -14,8 +14,12 @@ NVIDIA Model Optimizer Changelog (Linux)
 - Add support for Kimi K2 Thinking model quantization from the original int4 checkpoint.
 - Add support for MiniMax M2.1 model quantization support for the original FP8 checkpoint.
 - Add support for ``params`` constraint based automatic neural architecture search in Minitron pruning (``mcore_minitron``) as an alternative to manual pruning (using ``export_config``). See `examples/pruning/README.md <https://github.com/NVIDIA/Model-Optimizer/tree/main/examples/pruning>`_ for more details on its usage.
+- New example for Minitron pruning with Megatron-Bridge framework along with advanced pruning usage with new ``params`` constraint based pruning. Check `examples/megatron_bridge/README.md <https://github.com/NVIDIA/Model-Optimizer/tree/main/examples/megatron_bridge>`_ for example scripts.
 - Add support for calibration data with multiple samples in ``npz`` format in the ONNX Autocast workflow.
 - Add ``--opset`` option to ONNX quantization CLI to specify the target opset version for the quantized model.
+- Add support for context parallelism in Eagle speculative decoding for huggingface and megatron core models.
+- Add PTQ support for GLM-4.7, including loading MTP layer weights from a separate ``mtp.safetensors`` file and export as-is.
+- Add support for image-text data calibration in PTQ for Nemotron VL models.
 
 0.41 (2026-01-19)
 ^^^^^^^^^^^^^^^^^
@@ -225,7 +229,7 @@ NVIDIA Model Optimizer Changelog (Linux)
 - Add support for UNet ONNX quantization.
 - Enable ``concat_elimination`` pass by default to improve the performance of quantized ONNX models.
 - Enable Redundant Cast elimination pass by default in :meth:`moq.quantize <modelopt.onnx.quantization.quantize>`.
-- Add new attribute ``parallel_state`` to :class:`DynamicModule <modelopt.torch.opt.dynamic.DynamicModule>` to support distributed parallelism such as data parallel and tensor parallel.
+- Add new attribute ``parallel_state`` to :class:`QuantModule <modelopt.torch.quantization.nn.modules.quant_module.QuantModule>` to support distributed parallelism such as data parallel and tensor parallel.
 - Add MXFP8, NVFP4 quantized ONNX export support.
 - Add new example for torch quantization to ONNX for MXFP8, NVFP4 precision.
 
