@@ -570,26 +570,37 @@ def local_hessian_calibrate(
 
             return xq
 
-        is_nvfp4_per_block = (
-            fp8_scale_sweep
-            and weight_quantizer.is_static_block_quant
+        is_nvfp4_static = (
+            weight_quantizer.is_static_block_quant
             and weight_quantizer._num_bits == (2, 1)
             and weight_quantizer._block_sizes is not None
             and weight_quantizer._block_sizes.get("scale_bits") == (4, 3)
         )
 
+        if is_nvfp4_static:
+            global_amax = reduce_amax(initial_amax, axis=None)
+            NVFP4StaticQuantizer.from_tensor_quantizer(weight_quantizer, global_amax=global_amax)
+
         error_func = helper.get_error_func()
 
-        weight_quantizer._calibrator = MseCalibrator(
-            amax=initial_amax,
-            axis=weight_quantizer._calibrator._axis if weight_quantizer._calibrator else None,
-            step_size=step_size,
-            start_multiplier=start_multiplier,
-            stop_multiplier=stop_multiplier,
-            quant_func=quant_func,
-            error_func=error_func,
-            fp8_scale_sweep=is_nvfp4_per_block,
-        )
+        if fp8_scale_sweep and is_nvfp4_static:
+            weight_quantizer._calibrator = NVFP4MSECalibrator(
+                amax=initial_amax,
+                axis=weight_quantizer._calibrator._axis if weight_quantizer._calibrator else None,
+                global_amax=weight_quantizer.global_amax,
+                quant_func=quant_func,
+                error_func=error_func,
+            )
+        else:
+            weight_quantizer._calibrator = MseCalibrator(
+                amax=initial_amax,
+                axis=weight_quantizer._calibrator._axis if weight_quantizer._calibrator else None,
+                step_size=step_size,
+                start_multiplier=start_multiplier,
+                stop_multiplier=stop_multiplier,
+                quant_func=quant_func,
+                error_func=error_func,
+            )
 
     # Calibrate weights with local Hessian MSE
     for name, module in weight_quantizers_info:
