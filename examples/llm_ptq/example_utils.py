@@ -373,22 +373,24 @@ def load_mtp_weights_if_needed(model: torch.nn.Module, model_path: str) -> list[
     model_state = model.state_dict()
     total_loaded = 0
 
-    for filename in mtp_weight_map:
+    for filename, mtp_keys in mtp_weight_map.items():
         filepath = model_path / filename
         if not filepath.exists():
             continue
 
-        # Check which are missing from the model
-        missing_keys = [k for k in mtp_weight_map[filename] if k not in model_state]
-
-        print(f"Loading {len(missing_keys)} missing weights from {filename}...")
-        # Load the weights to CPU first, load_state_dict will handle device placement
+        print(f"Loading mtp weights from {filename}...")
         weights = load_file(str(filepath), device="cpu")
-        weights_to_load = {k: v for k, v in weights.items() if k in missing_keys}
+        weights = {k: v for k, v in weights.items() if k in mtp_keys}
+        # Separate weights to load via load_state_dict or register_buffer
+        in_state = {k: weights[k] for k in weights if k in model_state}
+        not_in_state = {k: weights[k] for k in weights if k not in model_state}
 
-        # Load into model
-        model.load_state_dict(weights_to_load, strict=False)
-        total_loaded += len(weights_to_load)
+        if in_state:
+            model.load_state_dict(in_state, strict=False)
+            total_loaded += len(in_state)
+        for k, v in not_in_state.items():
+            model.register_buffer(k, v)
+        total_loaded += len(not_in_state)
 
     if total_loaded > 0:
         print(f"✓ Successfully loaded {total_loaded} MTP weights")
