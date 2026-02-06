@@ -351,9 +351,14 @@ def load_model(args: argparse.Namespace):
 
         # Load any missing weights from non-standard safetensors (handled in get_model for non-low-memory mode)
         # Store the MTP layer prefixes on the model for later exclusion from quantization
-        mtp_layer_prefixes = load_mtp_weights_if_needed(full_model, args.pyt_ckpt_path)
+        mtp_layer_prefixes, mtp_state_dict = load_mtp_weights_if_needed(
+            full_model, args.pyt_ckpt_path
+        )
         if mtp_layer_prefixes:
             full_model._mtp_layer_prefixes = mtp_layer_prefixes
+
+        if mtp_state_dict:
+            full_model._mtp_state_dict = mtp_state_dict
 
     model_type = get_model_type(full_model)
 
@@ -635,6 +640,9 @@ def export_quantized(
             export_hf_checkpoint(
                 full_model,
                 export_dir=export_path,
+                extra_state_dict=full_model._mtp_state_dict
+                if hasattr(full_model, "_mtp_state_dict")
+                else None,
             )
 
         # Copy custom model files (Python files and JSON configs) if trust_remote_code is used

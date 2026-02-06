@@ -960,6 +960,7 @@ def export_hf_checkpoint(
     export_dir: Path | str = tempfile.gettempdir(),
     save_modelopt_state: bool = False,
     components: list[str] | None = None,
+    extra_state_dict: dict[str, torch.Tensor] | None = None,
 ):
     """Export quantized HuggingFace model checkpoint (transformers or diffusers).
 
@@ -1012,7 +1013,9 @@ def export_hf_checkpoint(
 
         # Save model
         model.save_pretrained(
-            export_dir, state_dict=post_state_dict, save_modelopt_state=save_modelopt_state
+            export_dir,
+            state_dict=post_state_dict | extra_state_dict,
+            save_modelopt_state=save_modelopt_state,
         )
 
         original_config = f"{export_dir}/config.json"

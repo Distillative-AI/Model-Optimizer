@@ -316,7 +316,9 @@ def get_processor(
     return None
 
 
-def load_mtp_weights_if_needed(model: torch.nn.Module, model_path: str) -> list[str]:
+def load_mtp_weights_if_needed(
+    model: torch.nn.Module, model_path: str
+) -> tuple[list[str], dict[str, torch.Tensor]]:
     """Load MTP weights from separate safetensors if needed (e.g., GLM-4.7).
 
     Some models store additional layers in separate safetensors files with non-standard
@@ -336,10 +338,9 @@ def load_mtp_weights_if_needed(model: torch.nn.Module, model_path: str) -> list[
     """
     model_path = Path(model_path)
     index_file = model_path / "model.safetensors.index.json"
-    mtp_layer_prefixes: list[str] = []
 
     if not index_file.exists():
-        return mtp_layer_prefixes
+        return [], {}
 
     # Load the index to find all referenced safetensors files
     index = json.load(open(index_file))
@@ -351,7 +352,7 @@ def load_mtp_weights_if_needed(model: torch.nn.Module, model_path: str) -> list[
             mtp_weight_map.setdefault(v, []).append(k)
 
     if not mtp_weight_map:
-        return mtp_layer_prefixes
+        return [], {}
 
     def _extract_layer_prefixes(keys):
         mtp_layer_prefixes = set()
@@ -363,7 +364,7 @@ def load_mtp_weights_if_needed(model: torch.nn.Module, model_path: str) -> list[
                     mtp_layer_prefixes.add(prefix)
                     break
 
-        return list(mtp_layer_prefixes)
+        return mtp_layer_prefixes
 
     # Flatten mtp_weight_map.values() (list of list of str) to a single list of str
     mtp_keys = [k for keys in mtp_weight_map.values() for k in keys]
@@ -373,32 +374,36 @@ def load_mtp_weights_if_needed(model: torch.nn.Module, model_path: str) -> list[
     model_state = model.state_dict()
     total_loaded = 0
 
+    not_in_state_dict = {}
+
     for filename, mtp_keys in mtp_weight_map.items():
         filepath = model_path / filename
         if not filepath.exists():
             continue
 
-        print(f"Loading mtp weights from {filename}...")
+        print(f"Loading {len(mtp_keys)} mtp weights from {filename}...")
         weights = load_file(str(filepath), device="cpu")
         weights = {k: v for k, v in weights.items() if k in mtp_keys}
-        # Separate weights to load via load_state_dict or register_buffer
-        in_state = {k: weights[k] for k in weights if k in model_state}
-        not_in_state = {k: weights[k] for k in weights if k not in model_state}
+        # Load the MTP weights to the model state dict
+        in_state_dict = {k: weights[k] for k in weights if k in model_state}
+        not_in_state_dict = not_in_state_dict | {
+            k: weights[k] for k in weights if k not in model_state
+        }
 
-        if in_state:
-            model.load_state_dict(in_state, strict=False)
-            total_loaded += len(in_state)
-        for k, v in not_in_state.items():
-            model.register_buffer(k, v)
-        total_loaded += len(not_in_state)
+        if in_state_dict:
+            model.load_state_dict(in_state_dict, strict=False)
+            total_loaded += len(in_state_dict)
 
     if total_loaded > 0:
-        print(f"✓ Successfully loaded {total_loaded} MTP weights")
+        print(
+            f"✓ Successfully loaded {total_loaded} MTP weights, "
+            f"{len(not_in_state_dict)} MTP weights not in model.state_dict"
+        )
 
     if mtp_layer_prefixes:
         print(f"✓ Detected MTP layers to exclude from quantization: {mtp_layer_prefixes}")
 
-    return mtp_layer_prefixes
+    return list(mtp_layer_prefixes), not_in_state_dict
 
 
 def get_dtype(dtype):
@@ -562,9 +567,11 @@ def get_model(
 
     # Load any missing weights from non-standard safetensors files (e.g., GLM-4.7's mtp.safetensors)
     # Store the MTP layer prefixes on the model for later exclusion from quantization
-    mtp_layer_prefixes = load_mtp_weights_if_needed(model, ckpt_path)
+    mtp_layer_prefixes, mtp_state_dict = load_mtp_weights_if_needed(model, ckpt_path)
     if mtp_layer_prefixes:
         model._mtp_layer_prefixes = mtp_layer_prefixes
+    if mtp_state_dict:
+        model._mtp_state_dict = mtp_state_dict
 
     return model
 
