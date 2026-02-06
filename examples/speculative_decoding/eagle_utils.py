@@ -31,6 +31,7 @@ from scripts.ar_validate import validate_ar
 from torch.distributed.tensor.experimental._attention import _SDPAMerger
 from torch.utils.data import Dataset
 from transformers import Trainer, TrainerCallback
+from transformers.trainer_pt_utils import LabelSmoother
 
 import modelopt
 from modelopt.torch.speculative.utils import get_ttt_msk_func
@@ -43,6 +44,8 @@ try:
 except ImportError:
     wandb = None
 
+IGNORE_TOKEN_ID = LabelSmoother.ignore_index
+
 
 class OfflineSupervisedDataset(Dataset):
     """Offline dataset for supervised fine-tuning.
@@ -51,38 +54,82 @@ class OfflineSupervisedDataset(Dataset):
 
     Args:
         dumped_files (list): A list of file paths to the dumped .pt files.
-        tokenizer (transformers.PreTrainedTokenizer): The tokenizer to use for data preprocessing.
     """
 
     def __init__(
         self,
         dumped_files,
-        tokenizer: transformers.PreTrainedTokenizer,
     ):
         super().__init__()
-        print_rank_0("Formatting inputs...Skip in offline mode")
-        self.tokenizer = tokenizer
         self.dumped_files = dumped_files
 
     def __len__(self):
         return len(self.dumped_files)
 
     def __getitem__(self, i) -> dict[str, torch.Tensor]:
-        # Load the conversational data, using the cache
-        offline_file_path = self.dumped_files[i]
-        # Extend the data sample with the hidden states from the .pt file
-        max_length = self.tokenizer.model_max_length
-        offline_data = torch.load(offline_file_path)
+        offline_data = torch.load(self.dumped_files[i])
+
+        labels = torch.full_like(offline_data["input_ids"], IGNORE_TOKEN_ID)
+        labels[..., :-1] = offline_data["input_ids"][..., 1:]
+
         ret = {
-            "input_ids": offline_data["input_ids"][:max_length],
-            "kwargs": {
-                "base_model_outputs": {
-                    "base_model_hidden_states": offline_data["hidden_states"][:max_length, :],
-                    "aux_hidden_states": offline_data["aux_hidden_states"][:max_length, :],
-                }
-            },
+            "input_ids": offline_data["input_ids"],
+            "base_model_hidden_states": offline_data["hidden_states"],
+            "aux_hidden_states": offline_data["aux_hidden_states"],
+            "attention_mask": torch.ones_like(offline_data["input_ids"]),
+            "loss_mask": torch.ones_like(offline_data["input_ids"]),
+            "labels": labels,
         }
         return ret
+
+
+class EagleOfflineDataCollator:
+    """Data collator that truncate or pads data for offline training."""
+
+    def __init__(self, max_length):
+        self.max_length = max_length
+
+    def _pad_or_truncate(self, x: torch.Tensor, length: int, dim: int = 0):
+        """Pad or truncate a tensor to length along a given dimension."""
+        dim = dim % x.ndim  # support negative dimension
+
+        # allocate output tensor
+        out_shape = list(x.shape)
+        out_shape[dim] = length
+        out = x.new_zeros(out_shape)
+
+        # consturct copy slice
+        slc = [slice(None)] * x.ndim
+        slc[dim] = slice(0, min(length, x.size(dim)))
+
+        # populate output tensor
+        out[tuple(slc)] = x[tuple(slc)]
+        return out
+
+    def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
+        base_batch = {
+            k: torch.stack([self._pad_or_truncate(item[k], self.max_length) for item in features])
+            for k in ["input_ids", "attention_mask", "loss_mask", "labels"]
+        }
+
+        base_model_outputs = {
+            k: torch.stack([self._pad_or_truncate(item[k], self.max_length) for item in features])
+            for k in ["base_model_hidden_states", "aux_hidden_states"]
+        }
+
+        batch = {
+            **base_batch,
+            "base_model_outputs": base_model_outputs,
+        }
+
+        # NOTE: vlm does not support offline data yet.
+        # # Collate VLM data
+        # if "pixel_values" in features[0]:
+        #     # pixel values and image flags should be flattened inside a batch
+        #     batch["pixel_values"] = torch.cat([item["pixel_values"] for item in features], dim=0)
+        #     batch["image_flags"] = torch.cat([item["image_flags"] for item in features], dim=0)
+
+        return batch
 
 
 def make_eagle_supervised_data_module(
@@ -93,23 +140,18 @@ def make_eagle_supervised_data_module(
     if data_args.offline_data_path is not None:
         print_rank_0("Loading pre-processed data for offline training...")
 
-        # Glob for all .pt files in the data_path directory
         assert data_args.offline_data_path is not None, (
             "offline_data_path must be provided for offline training."
         )
         offline_data_path = Path(data_args.offline_data_path)
-        all_files = [str(p) for p in offline_data_path.glob("*.pt")]
-        if not all_files:
+        dumped_files = [str(p) for p in offline_data_path.glob("*.pt")]
+        if not dumped_files:
             raise ValueError(f"No .pt files found in {data_args.offline_data_path}")
 
-        train_dataset = OfflineSupervisedDataset(
-            all_files,
-            tokenizer=tokenizer,
-        )
-
-        data_collator = DataCollatorForOffline(max_length=max_length)
+        train_dataset = OfflineSupervisedDataset(dumped_files)
+        data_collator = EagleOfflineDataCollator(max_length=max_length)
     else:
-        train_dataset = ShardedDataset("nvidia/Daring-Anteater")
+        train_dataset = ShardedDataset("json", data_files=data_args.data_path)
         data_collator = LanguageDataCollator(
             tokenizer=tokenizer,
             max_length=max_length,
@@ -120,85 +162,6 @@ def make_eagle_supervised_data_module(
         "train_dataset": train_dataset,
         "data_collator": data_collator,
     }
-
-
-class DataCollatorWithPadding:
-    def __init__(self, max_length):
-        self.max_length = max_length
-
-    def paddingtensor2d(self, intensors, length):
-        n, dim = intensors.shape
-        if n > length:
-            return intensors[:length, :]
-        padding_tensor = torch.zeros(length - n, dim, dtype=intensors.dtype)
-        outtensors = torch.cat((intensors, padding_tensor))
-        return outtensors
-
-    def paddingtensor(self, intensors, length):
-        if intensors.shape[0] > length:
-            return intensors[:length]
-        padding_tensor = torch.zeros(length - intensors.shape[0], dtype=intensors.dtype)
-        outtensors = torch.cat((intensors, padding_tensor))
-        return outtensors
-
-    def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
-        batch_input_ids = torch.stack(
-            [self.paddingtensor(item["input_ids"], self.max_length) for item in features]
-        )
-        batch_attention_mask = torch.stack(
-            [self.paddingtensor(item["attention_mask"], self.max_length) for item in features]
-        )
-        batch_loss_mask = torch.stack(
-            [self.paddingtensor(item["loss_mask"], self.max_length) for item in features]
-        )
-
-        batch_labels = torch.stack(
-            [self.paddingtensor(item["labels"], self.max_length) for item in features]
-        )
-
-        batch = {
-            "input_ids": batch_input_ids,
-            "attention_mask": batch_attention_mask,
-            "loss_mask": batch_loss_mask,
-            "labels": batch_labels,
-        }
-
-        # Collate VLM data
-        if "pixel_values" in features[0]:
-            # pixel values and image flags should be flattened inside a batch
-            batch["pixel_values"] = torch.cat([item["pixel_values"] for item in features], dim=0)
-            batch["image_flags"] = torch.cat([item["image_flags"] for item in features], dim=0)
-
-        return batch
-
-
-class DataCollatorForOffline(DataCollatorWithPadding):
-    def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
-        base_batch = super().__call__(features)
-        if "kwargs" not in features[0]:
-            raise ValueError("No kwargs found in batch features. Offline data required.")
-
-        features = [item["kwargs"]["base_model_outputs"] for item in features]
-
-        batch_hidden_states = torch.stack(
-            [
-                self.paddingtensor2d(item["base_model_hidden_states"], self.max_length)
-                for item in features
-            ]
-        )
-        batch_aux_hidden_states = torch.stack(
-            [self.paddingtensor2d(item["aux_hidden_states"], self.max_length) for item in features]
-        )
-
-        batch = {
-            **base_batch,
-            "base_model_outputs": {
-                "base_model_hidden_states": batch_hidden_states,
-                "aux_hidden_states": batch_aux_hidden_states,
-            },
-        }
-
-        return batch
 
 
 class EagleTrainerWithAccLog(Trainer):

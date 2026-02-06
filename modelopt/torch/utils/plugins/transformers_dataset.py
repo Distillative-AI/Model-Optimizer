@@ -57,6 +57,7 @@ class ShardedDataset(torch.utils.data.Dataset):
         self,
         name: str,
         subset: str | None = None,
+        data_files: str | None = None,
         split: str = "train",
         num_shards: int = 1,
         shard_index: int = 0,
@@ -66,6 +67,7 @@ class ShardedDataset(torch.utils.data.Dataset):
         self.name = name
         self.subset = subset
         self.split = split
+        self.data_files = data_files
         self.num_shards = num_shards
         self.shard_index = shard_index
         self.num_streaming_samples = num_streaming_samples
@@ -91,6 +93,7 @@ class ShardedDataset(torch.utils.data.Dataset):
         dataset = load_dataset(
             self.name,
             self.subset,
+            data_files=self.data_files,
             split=self.split,
             # num_proc=4,  # TODO: Make this configurable
             streaming=self.num_streaming_samples is not None,
