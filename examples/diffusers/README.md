@@ -116,7 +116,7 @@ python quantize.py \
     --hf-ckpt-dir ./hf_ckpt
 ```
 
-#### LTX-2 FP4 (torch checkpoint export)
+#### [LTX-2](https://github.com/Lightricks/LTX-2) FP4 (torch checkpoint export)
 
 ```sh
 python quantize.py \
