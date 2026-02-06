@@ -486,13 +486,12 @@ def local_hessian_calibrate(
             def local_hessian_error(x: torch.Tensor, xq: torch.Tensor) -> torch.Tensor:
                 """Compute local Hessian-weighted error."""
                 original_shape = x.shape
-                dw = (x - xq).view(-1, 1, bs)  # (num_blocks, 1, block_size)
-                # Repeat hessian for each output channel
-                hessian_expanded = hessian.repeat(
-                    cout, 1, 1
-                )  # (num_blocks, block_size, block_size)
-                # Per-block loss: (num_blocks,)
-                block_loss = (dw @ hessian_expanded @ dw.transpose(-1, -2)).squeeze(-1).squeeze(-1)
+                # Reshape to (cout, num_blocks_per_cin, block_size)
+                dw = (x - xq).view(cout, -1, bs)
+                # Use einsum to avoid materializing cout-repeated Hessian
+                # dw: (cout, n_blocks, bs), hessian: (n_blocks, bs, bs) -> (cout, n_blocks)
+                block_loss = torch.einsum("cnb,nbd,cnd->cn", dw, hessian, dw)
+                block_loss = block_loss.reshape(-1)
                 error = block_loss.unsqueeze(-1).expand(-1, bs).reshape(original_shape)
                 return error
 
@@ -522,12 +521,14 @@ def local_hessian_calibrate(
     # Setup helpers for all quantized linear modules
     name_to_module = dict(model.named_modules())
     weight_quantizers_info = []
+    all_patched_modules = []  # Track all modules for cleanup (including disabled ones)
 
     for name, module in name_to_module.items():
         if is_quantized_linear(module) and module.weight_quantizer.is_enabled:
             with enable_weight_access_and_writeback(module, model, name_to_module):
                 module.local_hessian = LocalHessianHelper(module, name)
             module.local_hessian.setup()
+            all_patched_modules.append((name, module))
             if module.local_hessian.is_enabled:
                 weight_quantizers_info.append((name, module))
 
@@ -619,7 +620,7 @@ def local_hessian_calibrate(
 
     # Cleanup and free memory
     LocalHessianHelper.cache_mode = False
-    for name, module in weight_quantizers_info:
+    for name, module in all_patched_modules:
         module.local_hessian.cleanup()
 
     print_rank_0("local_hessian: Calibration complete.")
