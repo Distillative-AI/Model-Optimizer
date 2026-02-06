@@ -31,6 +31,7 @@ IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
 
 def _sharegpt_to_openai_messages(conversations: list[dict]):
+    """Optionally align sharedgpt format to openai format."""
     role_mapping = {
         "user": "user",
         "User": "user",
@@ -50,7 +51,7 @@ def _sharegpt_to_openai_messages(conversations: list[dict]):
 
 
 class ShardedDataset(torch.utils.data.Dataset):
-    """ShardedDataset is a subclass of torch.utils.data.Dataset that is used to load data from a dataset."""
+    """Subclass of torch.utils.data.Dataset to load data from HuggingFace dataset."""
 
     def __init__(
         self,
@@ -106,7 +107,12 @@ class ShardedDataset(torch.utils.data.Dataset):
 
 
 class LanguageDataCollator:
-    """LanguageDataCollator is a class that is used to collate language data."""
+    """Data collator for language modeling tasks.
+
+    Accepts samples in OpenAI or ShareGPT formats and returns
+    tokenized outputs with padding and truncation, including
+    input_ids and attention_mask.
+    """
 
     def __init__(
         self,
@@ -116,6 +122,7 @@ class LanguageDataCollator:
         add_generation_prompt: bool = False,
         answer_only_loss: bool = False,
         json_key: str = "text",
+        return_labels: bool = False,
     ):
         """Initialize the LanguageDataset."""
         if not isinstance(tokenizer, transformers.PreTrainedTokenizerBase):
@@ -129,6 +136,7 @@ class LanguageDataCollator:
         self.add_generation_prompt = add_generation_prompt
         self.answer_only_loss = answer_only_loss
         self.json_key = json_key
+        self.return_labels = return_labels
 
         if chat_template is not None:
             self.tokenizer.chat_template = chat_template
@@ -163,6 +171,10 @@ class LanguageDataCollator:
             add_generation_prompt=self.add_generation_prompt,
             return_assistant_tokens_mask=self.answer_only_loss,
         )
+        if self.return_labels:
+            input_ids = tokenized_examples["input_ids"]
+            labels = input_ids.new_full(input_ids.shape, IGNORE_TOKEN_ID)
+            labels[..., :-1] = input_ids[..., 1:]
         return tokenized_examples
 
     def _process_text_sample(self, examples: list):
@@ -198,51 +210,6 @@ class LanguageDataCollator:
                 batch.append(messages)
 
         return self._process_chat_sample(batch)
-
-
-class LanguageDataset(ShardedDataset):
-    """LanguageDataset is a subclass of ShardedDataset that is used to load language data."""
-
-    def __init__(
-        self,
-        tokenizer: transformers.PreTrainedTokenizerBase,
-        name: str,
-        subset: str | None = None,
-        split: str = "train",
-        num_shards: int = 1,
-        shard_index: int = 0,
-        max_length: int = 4096,
-        chat_template: str | None = None,
-        add_generation_prompt: bool = False,
-        answer_only_loss: bool = False,
-        json_key: str = "text",
-    ):
-        """Initialize the LanguageDataset."""
-        super().__init__(
-            name=name,
-            subset=subset,
-            split=split,
-            num_shards=num_shards,
-            shard_index=shard_index,
-        )
-        self.collator = LanguageDataCollator(
-            tokenizer=tokenizer,
-            max_length=max_length,
-            chat_template=chat_template,
-            add_generation_prompt=add_generation_prompt,
-            answer_only_loss=answer_only_loss,
-            json_key=json_key,
-        )
-
-    def __getitem__(self, index):
-        """Get the item at the given index."""
-        index = index // self.num_shards
-
-        if self.num_streaming_samples is not None:
-            while index >= len(self._raw_samples):
-                self._raw_samples.append(next(self._stream_iterator))
-
-        return self.collator([self._raw_samples[index]])
 
 
 class VisionLanguageDataCollator(LanguageDataCollator):
