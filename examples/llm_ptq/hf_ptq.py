@@ -33,6 +33,7 @@ from example_utils import (
     get_tokenizer,
     is_enc_dec,
     is_nemotron_vl,
+    patch_config_for_unified_export,
     run_nemotron_vl_preview,
 )
 from torch.utils.data import DataLoader
@@ -663,6 +664,9 @@ def export_quantized(
                 full_model,
                 export_dir=export_path,
             )
+
+            # Exclude non-quantized modules in config.json and hf_quant_config.json
+            patch_config_for_unified_export(model_type, export_path)
 
         # Copy custom model files (Python files and JSON configs) if trust_remote_code is used
         copy_custom_model_files(args.pyt_ckpt_path, export_path, args.trust_remote_code)
