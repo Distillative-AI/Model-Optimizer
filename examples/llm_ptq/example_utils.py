@@ -43,6 +43,7 @@ except ImportError:
     snapshot_download = None
 
 import modelopt.torch.quantization as mtq
+from modelopt.torch.export.model_utils import MODEL_NAME_TO_TYPE
 from modelopt.torch.utils.dataset_utils import get_dataset_dataloader
 from modelopt.torch.utils.image_processor import (
     BaseImageProcessor,
@@ -60,6 +61,116 @@ from modelopt.torch.utils.vlm_dataset_utils import (
 )
 
 SPECULATIVE_MODEL_LIST = ["Eagle", "Medusa"]
+
+# Files needed for tokenizer/processor that vLLM loads from model path
+TOKENIZER_FILES = [
+    "vocab.json",
+    "merges.txt",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "preprocessor_config.json",
+    "chat_template.json",
+]
+
+
+def get_model_type_from_config(model_path: str) -> str | None:
+    """Get model type from the config.json file.
+
+    Args:
+        model_path: Path to the model directory or HuggingFace model ID.
+
+    Returns:
+        Model type string (e.g., 'qwen3omni', 'llama', 'gpt') or None if not found.
+    """
+    config_path = os.path.join(model_path, "config.json")
+    if not os.path.exists(config_path):
+        return None
+
+    with open(config_path) as f:
+        config = json.load(f)
+
+    # Check architectures field first
+    architectures = config.get("architectures", [])
+    for arch in architectures:
+        for key, model_type in MODEL_NAME_TO_TYPE.items():
+            if key.lower() in arch.lower():
+                return model_type
+
+    # Fallback to model_type field
+    model_type_field = config.get("model_type", "")
+    for key, model_type in MODEL_NAME_TO_TYPE.items():
+        if key.lower() in model_type_field.lower():
+            return model_type
+
+    return None
+
+
+def get_sampling_params_from_config(model_path: str) -> dict:
+    """Extract sampling params from generation_config.json if present."""
+    gen_config_path = Path(model_path) / "generation_config.json"
+    if not gen_config_path.exists():
+        return {}
+
+    gen_config = json.loads(gen_config_path.read_text())
+
+    params = {k: gen_config[k] for k in ("temperature", "top_p", "top_k") if k in gen_config}
+
+    for key in ("max_new_tokens", "max_length"):
+        if key in gen_config:
+            params["max_tokens"] = gen_config[key]
+            break
+
+    return params
+
+
+def get_quantization_format(model_path: str) -> str | None:
+    """Get quantization format from the model config.
+
+    Args:
+        model_path: Path to the model directory.
+
+    Returns:
+        vLLM quantization string ('modelopt', 'modelopt_fp4') or None if not quantized.
+    """
+    hf_quant_config_path = os.path.join(model_path, "hf_quant_config.json")
+    if os.path.exists(hf_quant_config_path):
+        with open(hf_quant_config_path) as f:
+            quant_config = json.load(f)
+        quant_algo = quant_config.get("quantization", {}).get("quant_algo", "")
+        if "NVFP4" in quant_algo:
+            return "modelopt_fp4"
+
+    return None
+
+
+def ensure_tokenizer_files(model_path: str, source_model_id: str) -> None:
+    """Copy tokenizer files from HF model to local quantized model dir if missing."""
+    if not os.path.isdir(model_path):
+        return  # Not a local path, nothing to do
+
+    # Check if tokenizer files are missing
+    missing_files = [f for f in TOKENIZER_FILES if not os.path.exists(os.path.join(model_path, f))]
+    if not missing_files:
+        return
+
+    if snapshot_download is None:
+        print("Warning: huggingface_hub not installed, cannot download tokenizer files")
+        return
+
+    print(f"Copying missing tokenizer files from {source_model_id}...")
+    # Download only tokenizer files from HF
+    cache_dir = snapshot_download(
+        source_model_id,
+        allow_patterns=TOKENIZER_FILES,
+    )
+
+    for fname in TOKENIZER_FILES:
+        src = os.path.join(cache_dir, fname)
+        dst = os.path.join(model_path, fname)
+        if os.path.exists(src) and not os.path.exists(dst):
+            shutil.copy2(src, dst)
+            print(f"  Copied {fname}")
 
 
 def run_nemotron_vl_preview(
