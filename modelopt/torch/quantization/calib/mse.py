@@ -122,14 +122,6 @@ class MseCalibrator(_Calibrator):
         self._losses_sum = None
         self._candidates = None
         self._amax = None
-
-    def clear(self):
-        """Clear all cached data to free GPU memory.
-
-        Call this after compute_amax() and load_calib_amax() are done.
-        """
-        self._losses_sum = None
-        self._candidates = None
         if self._initial_amax is not None:
             del self._initial_amax
             self._initial_amax = None
