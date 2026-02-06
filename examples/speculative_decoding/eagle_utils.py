@@ -37,7 +37,11 @@ import modelopt
 from modelopt.torch.speculative.utils import get_ttt_msk_func
 from modelopt.torch.utils import print_rank_0
 from modelopt.torch.utils.distributed import is_master
-from modelopt.torch.utils.plugins.transformers_dataset import LanguageDataCollator, ShardedDataset
+from modelopt.torch.utils.plugins.transformers_dataset import (
+    LanguageDataCollator,
+    ShardedDataset,
+    VisionLanguageDataCollator,
+)
 
 try:
     import wandb
@@ -86,8 +90,8 @@ class OfflineSupervisedDataset(Dataset):
 class EagleOfflineDataCollator:
     """Data collator that truncate or pads data for offline training."""
 
-    def __init__(self, max_length):
-        self.max_length = max_length
+    def __init__(self, train_len):
+        self.train_len = train_len
 
     def _pad_or_truncate(self, x: torch.Tensor, length: int, dim: int = 0):
         """Pad or truncate a tensor to length along a given dimension."""
@@ -108,12 +112,12 @@ class EagleOfflineDataCollator:
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
         base_batch = {
-            k: torch.stack([self._pad_or_truncate(item[k], self.max_length) for item in features])
+            k: torch.stack([self._pad_or_truncate(item[k], self.train_len) for item in features])
             for k in ["input_ids", "attention_mask", "loss_mask", "labels"]
         }
 
         base_model_outputs = {
-            k: torch.stack([self._pad_or_truncate(item[k], self.max_length) for item in features])
+            k: torch.stack([self._pad_or_truncate(item[k], self.train_len) for item in features])
             for k in ["base_model_hidden_states", "aux_hidden_states"]
         }
 
@@ -135,28 +139,36 @@ class EagleOfflineDataCollator:
 def make_eagle_supervised_data_module(
     tokenizer: transformers.PreTrainedTokenizer,
     data_args,
-    max_length=None,
+    train_len=None,
 ) -> dict:
-    if data_args.offline_data_path is not None:
-        print_rank_0("Loading pre-processed data for offline training...")
+    if data_args.offline_data_path is None:
+        train_dataset = ShardedDataset("json", data_files=data_args.data_path)
 
-        assert data_args.offline_data_path is not None, (
-            "offline_data_path must be provided for offline training."
-        )
+        if not data_args.vlm_processor:
+            data_collator = LanguageDataCollator(
+                tokenizer=tokenizer,
+                train_len=train_len,
+                return_labels=True,
+            )
+        else:
+            data_collator = VisionLanguageDataCollator(
+                processor=data_args.vlm_processor,
+                train_len=train_len,
+                local_image_path=data_args.vlm_img_dir,
+                return_labels=True,
+            )
+
+    else:
+        print_rank_0("Loading pre-processed data for offline training...")
+        assert not data_args.vlm_processor, "Offline data is not supported for VLM."
+
         offline_data_path = Path(data_args.offline_data_path)
         dumped_files = [str(p) for p in offline_data_path.glob("*.pt")]
         if not dumped_files:
             raise ValueError(f"No .pt files found in {data_args.offline_data_path}")
 
         train_dataset = OfflineSupervisedDataset(dumped_files)
-        data_collator = EagleOfflineDataCollator(max_length=max_length)
-    else:
-        train_dataset = ShardedDataset("json", data_files=data_args.data_path)
-        data_collator = LanguageDataCollator(
-            tokenizer=tokenizer,
-            max_length=max_length,
-            return_labels=True,
-        )
+        data_collator = EagleOfflineDataCollator(train_len=train_len)
 
     return {
         "train_dataset": train_dataset,

@@ -120,7 +120,7 @@ class LanguageDataCollator:
     def __init__(
         self,
         tokenizer: transformers.PreTrainedTokenizerBase,
-        max_length: int = 4096,
+        train_len: int = 4096,
         chat_template: str | None = None,
         add_generation_prompt: bool = False,
         answer_only_loss: bool = False,
@@ -135,7 +135,7 @@ class LanguageDataCollator:
                 )
             )
         self.tokenizer = tokenizer
-        self.max_length = max_length
+        self.train_len = train_len
         self.add_generation_prompt = add_generation_prompt
         self.answer_only_loss = answer_only_loss
         self.json_key = json_key
@@ -170,7 +170,7 @@ class LanguageDataCollator:
             return_dict=True,
             padding="max_length",
             truncation=True,
-            max_length=self.max_length,
+            max_length=self.train_len,
             add_generation_prompt=self.add_generation_prompt,
             return_assistant_tokens_mask=self.answer_only_loss,
         )
@@ -186,7 +186,7 @@ class LanguageDataCollator:
             return_tensors="pt",
             padding="max_length",
             truncation=True,
-            max_length=self.max_length,
+            max_length=self.train_len,
         )
         return tokenized_examples
 
@@ -220,37 +220,30 @@ class VisionLanguageDataCollator(LanguageDataCollator):
 
     def __init__(
         self,
-        processor: transformers.ProcessorMixin,
-        max_length: int = 8192,
+        processor: str,
+        train_len: int = 8192,
         chat_template: str | None = None,
         add_generation_prompt: bool = False,
         answer_only_loss: bool = False,
         local_image_path: str | None = None,
+        return_labels: bool = False,
     ):
         """Initialize the VisionLanguageDataset."""
-        if not isinstance(processor, transformers.ProcessorMixin):
-            raise ValueError(
-                "The processor must be a transformers.ProcessorMixin but got {}".format(
-                    type(processor)
-                )
-            )
-
-        self.processor = processor
-        self.max_length = max_length
+        self.processor = transformers.AutoProcessor.from_pretrained(processor)
         self.chat_template = chat_template
-        self.add_generation_prompt = add_generation_prompt
-        self.answer_only_loss = answer_only_loss
         self.local_image_path = local_image_path
 
         super().__init__(
             tokenizer=self.processor.tokenizer,
-            max_length=max_length,
+            train_len=train_len,
             chat_template=chat_template,
             add_generation_prompt=add_generation_prompt,
             answer_only_loss=answer_only_loss,
         )
 
     def _process_multimodal_sample(self, examples):
+        print(examples)
+        breakpoint()
         tokenized_messages = self.processor.apply_chat_template(
             examples,
             tokenize=True,
@@ -258,10 +251,11 @@ class VisionLanguageDataCollator(LanguageDataCollator):
             return_dict=True,
             padding="max_length",
             truncation=True,
-            max_length=self.max_length,
+            max_length=self.train_len,
             add_generation_prompt=self.add_generation_prompt,
             return_assistant_tokens_mask=self.answer_only_loss,
         )
+
         return tokenized_messages
 
     def __call__(self, examples):
@@ -286,8 +280,8 @@ class VisionLanguageDataCollator(LanguageDataCollator):
                 if isinstance(msg["content"], str):
                     msg["content"] = [{"type": "text", "text": msg["content"]}]
                 for ctn in msg["content"]:
-                    if ctn["type"] == "image" and "path" in ctn:
-                        ctn["path"] = self.local_image_path + "/" + ctn["path"]
+                    if ctn["type"] == "image" and "image" in ctn:
+                        ctn["image"] = self.local_image_path + "/" + ctn["image"]
 
             batch.append(copy_messages)
 

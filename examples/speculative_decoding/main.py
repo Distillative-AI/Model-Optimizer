@@ -170,7 +170,7 @@ def train():
         # To avoid OOM for large models, we load and convert model on CPU first.
         # Model will be moved to GPU during HF trainer.init().
         offline_kwargs = {"num_hidden_layers": 0} if use_offline_training else {}
-        model = transformers.AutoModelForCausalLM.from_pretrained(
+        model = transformers.Qwen3VLMoeForConditionalGeneration.from_pretrained(
             model_args.model_name_or_path,
             torch_dtype="auto",
             device_map="cpu",
@@ -252,7 +252,7 @@ def train():
         data_module = make_medusa_supervised_data_module(tokenizer, data_args)
     elif training_args.mode in ["eagle1", "eagle3"]:
         data_module = make_eagle_supervised_data_module(
-            tokenizer, data_args, max_length=training_args.training_seq_len
+            tokenizer, data_args, train_len=training_args.training_seq_len
         )
 
     trainer = EagleTrainerWithAccLog(
