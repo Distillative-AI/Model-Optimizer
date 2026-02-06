@@ -387,10 +387,12 @@ def local_hessian_calibrate(
 ):
     """Calibrate the model using local Hessian-weighted MSE search.
 
-    This calibration method collects input activations during forward pass, computes
-    per-block local Hessian matrices (H = X @ X.T), and uses them to weight the
-    MSE loss for scale selection. This minimizes output reconstruction error rather
-    than weight reconstruction error.
+    Instead of minimizing weight error ||W - Wq||², this minimizes Hessian-weighted error:
+        loss = (W - Wq)ᵀ H (W - Wq)
+    where H = X @ X.T approximates output reconstruction error ||WX - WqX||².
+
+    Per-block Hessians of shape (cin // block_size, block_size, block_size) are accumulated
+    during forward pass and used to weight the MSE loss during scale search.
 
     Args:
         model: Model to be calibrated.
@@ -512,6 +514,11 @@ def local_hessian_calibrate(
 
         return self._forward_no_local_hessian(input, *args, **kwargs)
 
+    # First, run max_calibrate on the whole model to get initial amax for all quantizers
+    # This calibrates both weight_quantizer and input_quantizer with max calibration
+    print_rank_0("local_hessian: Running max calibration for all quantizers...")
+    max_calibrate(model, forward_loop, distributed_sync)
+
     # Setup helpers for all quantized linear modules
     name_to_module = dict(model.named_modules())
     weight_quantizers_info = []
@@ -530,12 +537,6 @@ def local_hessian_calibrate(
     forward_loop(model)
 
     # TODO(fridah-nv): Sync Hessian across distributed processes if needed
-
-    # Get initial amax using max calibration on weights
-    print_rank_0("local_hessian: Computing initial amax with max calibration...")
-    for name, module in weight_quantizers_info:
-        with enable_weight_access_and_writeback(module, model, name_to_module):
-            max_calibrate(module, lambda m: m.weight_quantizer(m.weight), distributed_sync)
 
     # Replace calibrators with MseCalibrator using local Hessian error function
     print_rank_0("local_hessian: Running MSE calibration with local Hessian loss...")
@@ -608,34 +609,18 @@ def local_hessian_calibrate(
         if weight_quantizer._calibrator is None:
             continue
 
-        weight_quantizer.disable_quant()
-        weight_quantizer.enable_calib()
-
+        # Enable calibration mode for the weight quantizer
+        enable_stats_collection(module)
         with enable_weight_access_and_writeback(module, model, name_to_module):
             weight = module.weight
             weight_quantizer(weight)
-
-    # Compute optimal amax and load it
-    for name, module in weight_quantizers_info:
-        weight_quantizer = module.weight_quantizer
-        if weight_quantizer._calibrator is None:
-            continue
-
-        cal = weight_quantizer._calibrator
-        if cal.compute_amax() is not None:
-            weight_quantizer.load_calib_amax()
-
-        weight_quantizer.enable_quant()
-        weight_quantizer.disable_calib()
+        finish_stats_collection(module, method="mse")
+        weight_quantizer._calibrator.reset()
 
     # Cleanup and free memory
     LocalHessianHelper.cache_mode = False
     for name, module in weight_quantizers_info:
         module.local_hessian.cleanup()
-        if hasattr(module.weight_quantizer, "_calibrator"):
-            cal = module.weight_quantizer._calibrator
-            if hasattr(cal, "clear"):
-                cal.clear()
 
     print_rank_0("local_hessian: Calibration complete.")
 

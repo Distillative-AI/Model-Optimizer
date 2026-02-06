@@ -388,7 +388,7 @@ NVFP4_DEFAULT_CFG = {
     "algorithm": "max",
 }
 
-NVFP4_LOCAL_HESSIAN_WEIGHT_ONLY_CFG = {
+NVFP4_W4A4_WEIGHT_LOCAL_HESSIAN_CFG = {
     "quant_cfg": {
         "*weight_quantizer": {
             "num_bits": (2, 1),
@@ -397,7 +397,10 @@ NVFP4_LOCAL_HESSIAN_WEIGHT_ONLY_CFG = {
             "enable": True,
         },
         "*input_quantizer": {
-            "enable": False,
+            "num_bits": (2, 1),
+            "block_sizes": {-1: 16, "type": "dynamic", "scale_bits": (4, 3)},
+            "axis": None,
+            "enable": True,
         },
         **_default_disabled_quantizer_cfg,
     },
