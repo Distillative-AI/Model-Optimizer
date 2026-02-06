@@ -977,6 +977,7 @@ def export_hf_checkpoint(
         save_modelopt_state: Whether to save the modelopt state_dict.
         components: Only used for diffusers pipelines. Optional list of component names
             to export. If None, all quantized components are exported.
+        extra_state_dict: Extra state dictionary to add to the exported model.
     """
     export_dir = Path(export_dir)
     export_dir.mkdir(parents=True, exist_ok=True)
