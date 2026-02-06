@@ -27,7 +27,7 @@ while skipping pruning of num_attention_heads using following defaults:
         --output_hf_path /tmp/Qwen3-8B-Pruned-6B
 
 To see the full usage for advanced configurations, run:
-    python prune_minitron.py --help
+    torchrun --nproc_per_node 1 prune_minitron.py --help
 """
 
 import argparse
