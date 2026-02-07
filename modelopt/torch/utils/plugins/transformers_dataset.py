@@ -17,6 +17,7 @@
 
 import copy
 import itertools
+import os
 
 import torch
 import transformers
@@ -44,8 +45,8 @@ def _sharegpt_to_openai_messages(conversations: list[dict]):
     }
     messages = []
     for msg in conversations:
-        role = role_mapping[msg["from"]]
-        content = msg["value"]
+        role = role_mapping[msg["role"]]
+        content = msg["content"]
         messages.append({"role": role, "content": content})
     return messages
 
@@ -225,7 +226,7 @@ class VisionLanguageDataCollator(LanguageDataCollator):
         chat_template: str | None = None,
         add_generation_prompt: bool = False,
         answer_only_loss: bool = False,
-        local_image_path: str | None = None,
+        local_image_path: str = "",
         return_labels: bool = False,
     ):
         """Initialize the VisionLanguageDataset."""
@@ -242,8 +243,6 @@ class VisionLanguageDataCollator(LanguageDataCollator):
         )
 
     def _process_multimodal_sample(self, examples):
-        print(examples)
-        breakpoint()
         tokenized_messages = self.processor.apply_chat_template(
             examples,
             tokenize=True,
@@ -279,9 +278,17 @@ class VisionLanguageDataCollator(LanguageDataCollator):
             for msg in copy_messages:
                 if isinstance(msg["content"], str):
                     msg["content"] = [{"type": "text", "text": msg["content"]}]
+
                 for ctn in msg["content"]:
                     if ctn["type"] == "image" and "image" in ctn:
-                        ctn["image"] = self.local_image_path + "/" + ctn["image"]
+                        ctn["image"] = os.path.abspath(
+                            os.path.join(self.local_image_path, ctn["image"])
+                        )
+                    # If any value in ctn is None, delete that key
+                    # HF dataloader add Nones to align keys. Leads to error in processor.
+                    keys_to_delete = [k for k, v in ctn.items() if v is None]
+                    for k in keys_to_delete:
+                        del ctn[k]
 
             batch.append(copy_messages)
 

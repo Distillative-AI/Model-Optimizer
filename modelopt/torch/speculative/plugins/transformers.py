@@ -425,16 +425,23 @@ class HFEagleModel(EagleModel):
     @property
     def _base_llm_config(self):
         """Return the llm config for the base model, from LLM or VLM."""
-        return self.config.llm_config if hasattr(self.config, "llm_config") else self.config
+        # return self.config.llm_config if hasattr(self.config, "llm_config") else self.config
+        return self.config.text_config
 
     def _find_base_model_parts(self):
         """Find model parts from different models and set base_{part}_path attributes."""
         base_model_parts_mapping = {
-            "base_model_path": ["model", "backbone", "language_model.backbone"],
+            "base_model_path": [
+                "model.language_model",
+                "model",
+                "backbone",
+                "language_model.backbone",
+            ],
             "base_model_embeddings_path": [
                 "model.embed_tokens",
                 "backbone.embeddings",
                 "language_model.backbone.embeddings",
+                "model.language_model.embed_tokens",
             ],
             "base_model_lm_head_path": ["lm_head", "language_model.lm_head"],
         }
@@ -747,7 +754,8 @@ class HFEagleModel(EagleModel):
             del vit_embeds
             return tok_embeds.reshape(bs, seq_len, hid_size)
         else:
-            raise ValueError(f"VLM model type {self.config.model_type} not supported")
+            breakpoint()
+            # raise ValueError(f"VLM model type {self.config.model_type} not supported")
 
     def _base_model_forward(
         self,
@@ -769,6 +777,7 @@ class HFEagleModel(EagleModel):
                 **kwargs,
             )
             past_key_values = getattr(outputs, "past_key_values", None)
+            input_embeds = outputs.hidden_states[0]
             base_model_hidden_states = outputs.hidden_states[-1]
             base_model_logits = outputs.logits
 
@@ -780,7 +789,13 @@ class HFEagleModel(EagleModel):
                 labels = labels.view(-1)
                 base_model_loss = loss_fct(loss_logits, labels)
 
-        return base_model_hidden_states, base_model_logits, base_model_loss, past_key_values
+        return (
+            input_embeds,
+            base_model_hidden_states,
+            base_model_logits,
+            base_model_loss,
+            past_key_values,
+        )
 
     def _map_logits_to_draft_vocab(self, full_logits):
         reverse_mapping = (
@@ -872,16 +887,20 @@ class HFEagleModel(EagleModel):
                 base_model_logits = self.lm_head(base_model_hidden_states)
             base_model_loss, past_key_values = None, None
         else:
-            base_model_hidden_states, base_model_logits, base_model_loss, past_key_values = (
-                self._base_model_forward(
-                    input_ids,
-                    attention_mask,
-                    position_ids,
-                    past_key_values,
-                    self.eagle_freeze_base_model,
-                    labels,
-                    **kwargs,
-                )
+            (
+                base_input_embeds,
+                base_model_hidden_states,
+                base_model_logits,
+                base_model_loss,
+                past_key_values,
+            ) = self._base_model_forward(
+                input_ids,
+                attention_mask,
+                position_ids,
+                past_key_values,
+                self.eagle_freeze_base_model,
+                labels,
+                **kwargs,
             )
 
         if not isinstance(past_key_values, Cache):
@@ -912,7 +931,8 @@ class HFEagleModel(EagleModel):
             eagle_cache,
         )
         with torch.no_grad():
-            inputs_embeds = self._llm_or_vlm_embedding(eagle_input_ids, kwargs)
+            # inputs_embeds = self._llm_or_vlm_embedding(eagle_input_ids, kwargs)
+            inputs_embeds = base_input_embeds.roll(-1, 1)
 
         past_key_values.eagle_cache = eagle_cache
 
