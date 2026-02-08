@@ -105,3 +105,8 @@ class EagleConfig(ModeloptBaseConfig):
         default="llama",
         description=("The class of eagle decoder to use. Available options: llama, kimik2"),
     )
+
+    draft_vocab_cache: str = ModeloptField(
+        default=None,
+        description=("Path to d2t.pt cache file."),
+    )

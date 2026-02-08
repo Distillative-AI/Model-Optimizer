@@ -24,6 +24,8 @@ import transformers
 from datasets import load_dataset
 from transformers.trainer_pt_utils import LabelSmoother
 
+from modelopt.torch.utils import print_rank_0
+
 REMOVE_THINK_CHAT_TEMPLATE = (
     "{% if '</think>' in content %}{% set content = content.split('</think>')[-1] %}{% endif %}"
 )
@@ -147,10 +149,15 @@ class LanguageDataCollator:
         else:
             self._post_process_chat_template()
 
+        self._post_process_tokenizer()
         if self.tokenizer.chat_template is None:
             raise ValueError("No valid chat template!")
 
     def _post_process_tokenizer(self):
+        if self.tokenizer.pad_token_id is None:
+            print_rank_0("The tokenizer has no pad_token_id, using eos_token_id instead.")
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
         if hasattr(self.tokenizer, "pad_token") and self.tokenizer.pad_token is None:
             if self.tokenizer.eos_token == "<|eot_id|>":  # nosec
                 self.tokenizer.pad_token = "<|end_of_text|>"  # nosec
@@ -264,7 +271,6 @@ class VisionLanguageDataCollator(LanguageDataCollator):
         for example in examples:
             messages = example.get("messages", None)
             if messages is None:
-                # print(example)
                 conversations = example.get("conversations", None)
                 if conversations is None:
                     raise ValueError(

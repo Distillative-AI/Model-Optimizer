@@ -31,6 +31,7 @@
 
 import contextlib
 import copy
+import os
 from typing import Any
 
 import torch
@@ -48,6 +49,8 @@ from transformers.models.llama.modeling_llama import (
 from transformers.trainer_pt_utils import LabelSmoother
 from transformers.utils import ModelOutput
 from transformers.utils.quantization_config import QuantizationMethod
+
+from modelopt.torch.utils import print_rank_0
 
 from ..eagle.conversion import EagleDMRegistry
 from ..eagle.eagle_model import EagleModel
@@ -248,7 +251,16 @@ class EagleModule(nn.Module):
             # Initialize the buffers to zero.
             # Their values depend on specific tokenzier and calibrate dataset, and should be set in training script.
             if config.draft_vocab_size < config.vocab_size:
-                self.register_buffer("d2t", torch.zeros(config.draft_vocab_size, dtype=torch.int64))
+                if config.draft_vocab_cache is not None and os.path.isfile(
+                    config.draft_vocab_cache
+                ):
+                    self.register_buffer("d2t", torch.load(config.draft_vocab_cache))
+                    print_rank_0(f"Loaded draft vocab cache from {config.draft_vocab_cache}.")
+                else:
+                    raise FileNotFoundError(
+                        f"Draft vocab cache file not found: {config.draft_vocab_cache}"
+                    )
+
             self.lm_head = nn.Linear(
                 config.hidden_size,
                 config.draft_vocab_size,
@@ -425,8 +437,11 @@ class HFEagleModel(EagleModel):
     @property
     def _base_llm_config(self):
         """Return the llm config for the base model, from LLM or VLM."""
-        # return self.config.llm_config if hasattr(self.config, "llm_config") else self.config
-        return self.config.text_config
+        return (
+            getattr(self.config, "text_config", None)
+            or getattr(self.config, "llm_config", None)
+            or self.config
+        )
 
     def _find_base_model_parts(self):
         """Find model parts from different models and set base_{part}_path attributes."""
@@ -573,13 +588,6 @@ class HFEagleModel(EagleModel):
             and len(self.eagle_config.eagle_aux_hidden_state_layer_ids) == 0
         ):
             self._set_default_aux_hidden_state_layers()
-
-        if self._base_llm_config.hidden_size != self.eagle_config.hidden_size:
-            raise ValueError(
-                "EAGLE module hidden size "
-                f"{self.eagle_config.hidden_size} must match base model hidden size "
-                f"{self._base_llm_config.hidden_size}!"
-            )
 
         # Freeze all parameters
         if self.eagle_freeze_base_model:
